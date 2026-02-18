@@ -586,14 +586,14 @@ function selectSearchResult(symbol) {
 // REFRESH & SNAPSHOTS
 // ============================================================
 async function refreshData() {
-  const activeTickers = appData.companies.filter(c=>!c.archived).map(c=>c.ticker);
+  const activeTickers = appData.companies.filter(c=>!c.archived && c.ticker).map(c=>c.ticker);
   if(!activeTickers.length) { updateSyncStatus(); return; }
   toast('Refreshing quotes via Google Finance...');
   const quotes = await fetchQuotesBatch(activeTickers);
   const todayStr = today();
 
   for(const company of appData.companies) {
-    if(company.archived) continue;
+    if(company.archived || !company.ticker) continue;
     const q = quotes[company.ticker];
     if(!q) { company._fetchError = true; continue; }
     company._fetchError = false;
@@ -938,7 +938,7 @@ function renderUniverseRow(c) {
 
   return `<tr class="${sel?'bg-blue-50':'hover:bg-gray-50'} cursor-pointer" onclick="if(event.target.type!=='checkbox')navigate('detail','${c.id}')">
     <td class="px-3 py-2"><input type="checkbox" ${sel?'checked':''} onclick="event.stopPropagation();toggleRowSelect('${c.id}')"></td>
-    <td class="px-3 py-2 text-sm font-medium">${escHtml(c.ticker)} ${c._fetchError?'<span class="text-yellow-500" title="Fetch error">⚠</span>':''}</td>
+    <td class="px-3 py-2 text-sm font-medium">${c.ticker ? escHtml(c.ticker) : '<span class="text-gray-400 text-xs italic">—</span>'}${c._fetchPending?' <span class="text-blue-400 text-xs" title="Loading financial data...">↻</span>':''}${c._fetchError?' <span class="text-yellow-500" title="Fetch error">⚠</span>':''}</td>
     <td class="px-3 py-2 text-sm">${escHtml(c.name||'')}</td>
     <td class="px-3 py-2 text-sm">${escHtml(c.country||'')}</td>
     <td class="px-3 py-2 text-sm">${stageBadge(c.stage)}</td>
@@ -1009,7 +1009,7 @@ function renderDetail() {
       <div class="flex items-center gap-4">
         <button onclick="navigate('universe')" class="text-gray-400 hover:text-gray-600 text-lg">←</button>
         <div>
-          <h1 class="text-2xl font-bold">${escHtml(c.ticker)} — ${escHtml(c.name||'')}</h1>
+          <h1 class="text-2xl font-bold">${c.ticker ? `${escHtml(c.ticker)} — ` : ''}${escHtml(c.name||c.ticker||'')}</h1>
           <p class="text-sm text-gray-500">${escHtml(c.country||'')} · ${escHtml(c.industry||'')} · ${escHtml(c.sector||'')} · ${escHtml(c.currency||'')} · Mkt Cap: ${formatNum(c.marketCap)}</p>
         </div>
       </div>
@@ -1523,7 +1523,7 @@ function openAddCompanyModal() {
             oninput="onTickerSearchInput(this)" onkeydown="onTickerSearchKeydown(event)" onfocus="onTickerSearchInput(this)">
           <div id="ticker-search-dropdown" class="search-dropdown hidden"></div>
         </div>
-        <p class="text-xs text-gray-400 mt-1">${stockListMode==='full'?'Instant search from cached list.':'Live search via FMP API.'} <button onclick="fetchStockList().then(()=>toast(stockListMode==='full'?'Full list loaded':'Using live search'))" class="text-blue-500 hover:underline">Refresh list</button></p>
+        <p class="text-xs text-gray-400 mt-1">${stockListMode==='full'?'Instant search from cached list.':'Live search via FMP API.'} <button onclick="fetchStockList().then(()=>toast(stockListMode==='full'?'Full list loaded':'Using live search'))" class="text-blue-500 hover:underline">Refresh list</button> · No ticker? Just type a company name and click Add directly.</p>
       </div>
       <div id="add-lookup-result"></div>
       <div>
@@ -1583,8 +1583,19 @@ async function lookupTicker() {
 }
 
 function confirmAddCompany() {
-  const ticker = document.getElementById('add-ticker').value.trim().toUpperCase();
-  if(!ticker) { toast('Enter a ticker', 'error'); return; }
+  const rawInput = document.getElementById('add-ticker').value.trim();
+  if(!rawInput) { toast('Enter a ticker or company name', 'error'); return; }
+
+  // Use the verified ticker from lookup; if no lookup was done, no ticker
+  const ticker = lookupCache ? lookupCache.ticker.toUpperCase() : '';
+  const p = lookupCache?.profile || {};
+  const q = lookupCache?.quote || {};
+  const name = p.companyName || q.name || (ticker ? ticker : rawInput);
+
+  // Duplicate check
+  if(ticker && appData.companies.some(c=>c.ticker===ticker)) { toast('Already in universe', 'error'); return; }
+  if(!ticker && appData.companies.some(c=>!c.ticker && c.name===name)) { toast('Already in universe', 'error'); return; }
+
   const stage = document.getElementById('add-stage').value;
   const source = document.getElementById('add-source').value;
   const why = document.getElementById('add-why').value.trim();
@@ -1598,11 +1609,8 @@ function confirmAddCompany() {
     whyPassed = reason;
   }
 
-  const p = lookupCache?.profile || {};
-  const q = lookupCache?.quote || {};
-
   const company = {
-    id: uuid(), ticker, name: p.companyName || q.name || ticker,
+    id: uuid(), ticker, name,
     country: p.country || '', industry: p.industry || '', sector: p.sector || '', currency: p.currency || q.currency || '',
     marketCap: q.marketCap || null,
     stage, source, tags, whyInteresting: why, notes: '', whyPassed,
@@ -1618,7 +1626,7 @@ function confirmAddCompany() {
   lookupCache = null;
   saveDataToDrive();
   closeModal();
-  toast(`Added ${ticker}`);
+  toast(ticker ? `Added ${ticker}` : `Added ${name}`);
   renderCurrentView();
 }
 
@@ -1628,7 +1636,7 @@ function confirmAddCompany() {
 function openBulkImportModal() {
   showModal('Bulk Import CSV', `
     <div class="space-y-3">
-      <p class="text-sm text-gray-600">Upload a CSV with columns: <strong>ticker, date</strong> (e.g. <code>AAPL,2025-06-15</code>). Header row is optional.</p>
+      <p class="text-sm text-gray-600">Upload a CSV with columns: <strong>ticker, name (optional), date (optional)</strong>. E.g. <code>AAPL,2025-06-15</code> or <code>AAPL,Apple Inc.,2025-06-15</code>. To add a company without a ticker, leave the first column blank: <code>,Private Co,2025-06-15</code>. Header row is optional.</p>
       <input type="file" accept=".csv,.txt" id="bulk-csv-file" class="text-sm">
       <div>
         <label class="text-sm font-medium text-gray-700">Shared Tags (optional)</label>
@@ -1653,70 +1661,162 @@ async function processBulkImport() {
   const fileInput = document.getElementById('bulk-csv-file');
   if(!fileInput.files.length) { toast('Select a file', 'error'); return; }
   const text = await fileInput.files[0].text();
+
+  // Split lines, trim, drop completely blank lines
   const lines = text.split(/[\r\n]+/).map(l=>l.trim()).filter(Boolean);
-  // Skip header row if first field doesn't look like a ticker
-  const firstFields = lines[0].split(',').map(f=>f.trim());
-  const hasHeader = /^(ticker|symbol)/i.test(firstFields[0]);
+  if(!lines.length) { toast('File is empty', 'error'); return; }
+
+  // Skip header row if first field looks like a column header
+  const firstField = lines[0].split(',')[0].trim();
+  const hasHeader = /^(ticker|symbol)/i.test(firstField);
   const dataLines = hasHeader ? lines.slice(1) : lines;
 
-  // Parse each line as: ticker, date
+  // Helper: check if a string looks like a date (not a company name)
+  const looksLikeDate = s => {
+    if(!s || !/\d/.test(s)) return false;
+    return !isNaN(new Date(s).getTime());
+  };
+
+  // Parse rows: supports ticker,date  OR  ticker,name,date  OR  ,name,date (no-ticker)
   const rows = dataLines.map(line => {
     const parts = line.split(',').map(f=>f.trim());
-    const ticker = parts[0].toUpperCase();
-    const rawDate = parts[1] || '';
-    // Parse date: accept YYYY-MM-DD, MM/DD/YYYY, etc.
+    if(parts.every(p=>!p)) return null; // skip all-empty rows
+
+    let ticker = '', name = '', rawDate = '';
+
+    if(parts.length >= 3) {
+      // 3-column: ticker, name, date  (ticker may be blank for no-ticker companies)
+      ticker = parts[0].toUpperCase();
+      name = parts[1] || '';
+      rawDate = parts[2] || '';
+    } else if(parts.length === 2) {
+      if(looksLikeDate(parts[1])) {
+        // Old 2-column: ticker, date
+        ticker = parts[0].toUpperCase();
+        rawDate = parts[1];
+      } else {
+        // ticker, name  (no date)
+        ticker = parts[0].toUpperCase();
+        name = parts[1];
+      }
+    } else {
+      ticker = parts[0].toUpperCase();
+    }
+
+    // Parse date
     let dateAdded = '';
     if(rawDate) {
       const parsed = new Date(rawDate);
       if(!isNaN(parsed.getTime())) dateAdded = parsed.toISOString();
     }
-    return { ticker, dateAdded };
-  }).filter(r => r.ticker);
 
-  if(!rows.length) { toast('No tickers found', 'error'); return; }
+    // Skip rows with neither a ticker nor a name
+    if(!ticker && !name) return null;
+
+    return { ticker, name, dateAdded };
+  }).filter(Boolean);
+
+  if(!rows.length) { toast('No valid rows found in CSV', 'error'); return; }
 
   const tags = [...document.querySelectorAll('.bulk-tag-cb:checked')].map(cb=>cb.value);
   const source = document.getElementById('bulk-source').value;
-  const resultEl = document.getElementById('bulk-import-result');
-  resultEl.innerHTML = '<p class="text-sm text-gray-500">Fetching data via Google Finance for ' + rows.length + ' tickers (may take a few seconds)...</p>';
 
-  const tickers = rows.map(r=>r.ticker);
-  const quotes = await fetchQuotesBatch(tickers);
-  let added = 0, failed = [];
+  // ── Phase 1: Instantly add all companies to the universe ──
+  const companiesToFetch = []; // Companies with tickers that need financial data
+  let added = 0;
+  const skipped = [];
 
   for(const row of rows) {
-    const ticker = row.ticker;
-    if(appData.companies.some(c=>c.ticker===ticker)) { failed.push(ticker + ' (duplicate)'); continue; }
-    const q = quotes[ticker];
-    if(!q) { failed.push(ticker + ' (not found)'); continue; }
+    const { ticker, name, dateAdded } = row;
 
-    let profile = null;
-    try { profile = await fetchProfile(ticker); } catch(e) {}
+    // Duplicate check
+    if(ticker && appData.companies.some(c=>c.ticker===ticker)) {
+      skipped.push((name||ticker) + ' (duplicate)'); continue;
+    }
+    if(!ticker && name && appData.companies.some(c=>!c.ticker && c.name===name)) {
+      skipped.push(name + ' (duplicate)'); continue;
+    }
 
-    const p = profile || {};
-    const addedDate = row.dateAdded || now();
-    appData.companies.push({
-      id: uuid(), ticker, name: p.companyName || q.name || ticker,
-      country: p.country || '', industry: p.industry || '', sector: p.sector || '', currency: p.currency || q.currency || '',
-      marketCap: q.marketCap || null,
+    const addedDate = dateAdded || now();
+    const displayName = name || ticker;
+
+    const company = {
+      id: uuid(),
+      ticker: ticker || '',
+      name: displayName,
+      country: '', industry: '', sector: '', currency: '',
+      marketCap: null,
       stage: 'intake', source: source || '', tags: [...tags],
       whyInteresting: '', notes: '', whyPassed: '',
       googleDocLink: '', targetPriceMin: null, targetPriceMax: null,
       dateAdded: addedDate, dateLastUpdated: now(),
       stageHistory: [{ stage: 'intake', timestamp: addedDate, note: 'Bulk import' }],
       customMetrics: [],
-      snapshots: [{ timestamp: addedDate, price: q.price, pe: q.pe, marketCap: q.marketCap }],
-      archived: false
-    });
+      snapshots: [],
+      archived: false,
+      _fetchPending: !!ticker
+    };
+
+    appData.companies.push(company);
+    if(ticker) companiesToFetch.push({ company, ticker, addedDate });
     added++;
   }
 
+  if(!added) { toast('No new companies added' + (skipped.length ? ' — all duplicates' : ''), 'error'); return; }
+
+  // Save and render immediately — tickers appear in the list right away
   await saveDataToDrive();
-  resultEl.innerHTML = `<div class="text-sm mt-2">
-    <p class="text-green-600 font-medium">✓ Added ${added} companies</p>
-    ${failed.length ? `<p class="text-red-500 mt-1">Failed: ${failed.join(', ')}</p>` : ''}
-  </div>`;
-  if(added > 0) renderCurrentView();
+  closeModal();
+  renderCurrentView();
+
+  if(!companiesToFetch.length) {
+    toast(`Added ${added} companies`);
+    return;
+  }
+
+  const noTickerCount = added - companiesToFetch.length;
+  toast(`Added ${added} compan${added===1?'y':'ies'}${skipped.length?' ('+skipped.length+' skipped)':''}. Fetching financial data...`);
+
+  // ── Phase 2: Fetch financial data in background ──
+  const tickers = companiesToFetch.map(r=>r.ticker);
+  let quotes = {};
+  try { quotes = await fetchQuotesBatch(tickers); } catch(e) { console.error('Batch fetch failed', e); }
+
+  let fetched = 0;
+  for(let i = 0; i < companiesToFetch.length; i++) {
+    const { company, ticker, addedDate } = companiesToFetch[i];
+    const q = quotes[ticker];
+    if(!q) { company._fetchPending = false; company._fetchError = true; continue; }
+
+    let profile = null;
+    try { profile = await fetchProfile(ticker); } catch(e) {}
+    const p = profile || {};
+
+    company._fetchPending = false;
+    company.name = p.companyName || q.name || company.name;
+    company.country = p.country || '';
+    company.industry = p.industry || '';
+    company.sector = p.sector || '';
+    company.currency = p.currency || q.currency || '';
+    company.marketCap = q.marketCap || null;
+    company.snapshots = [{ timestamp: addedDate, price: q.price, pe: q.pe, marketCap: q.marketCap }];
+    company.dateLastUpdated = now();
+    fetched++;
+
+    // Save and re-render every 5 companies or at the end
+    const isLast = i === companiesToFetch.length - 1;
+    if(fetched % 5 === 0 || isLast) {
+      await saveDataToDrive();
+      renderCurrentView();
+    }
+  }
+
+  const notFound = companiesToFetch.length - fetched;
+  if(notFound > 0) {
+    toast(`Financial data loaded for ${fetched}/${companiesToFetch.length} tickers. ${notFound} not found.`);
+  } else {
+    toast(`Financial data loaded for all ${fetched} ticker${fetched===1?'':'s'}`);
+  }
 }
 
 // ============================================================
