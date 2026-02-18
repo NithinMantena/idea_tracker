@@ -1,0 +1,2012 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Company Research Tracker</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="https://apis.google.com/js/api.js"></script>
+<style>
+[x-cloak] { display: none !important; }
+.tab-active { border-bottom: 2px solid #3b82f6; color: #3b82f6; font-weight: 600; }
+.modal-overlay { background: rgba(0,0,0,0.5); }
+.badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 9999px; font-size: 0.75rem; font-weight: 500; }
+.stage-intake { background: #dbeafe; color: #1e40af; }
+.stage-perpetual_watch { background: #fef9c3; color: #854d0e; }
+.stage-interesting_unresolved { background: #e0e7ff; color: #3730a3; }
+.stage-passed { background: #f3f4f6; color: #6b7280; }
+.toast { position: fixed; bottom: 20px; right: 20px; z-index: 9999; padding: 12px 24px; border-radius: 8px; color: white; font-weight: 500; transition: opacity 0.3s; }
+.toast-success { background: #10b981; }
+.toast-error { background: #ef4444; }
+.bulk-bar { position: sticky; top: 0; z-index: 30; }
+table th { cursor: pointer; user-select: none; }
+th.sorted-asc::after { content: ' ▲'; }
+th.sorted-desc::after { content: ' ▼'; }
+.filter-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 10px; border-radius: 9999px; font-size: 0.8rem; background: #e0e7ff; color: #3730a3; }
+.filter-chip button { font-size: 0.7rem; margin-left: 2px; }
+.search-dropdown { position: absolute; top: 100%; left: 0; right: 0; z-index: 50; max-height: 260px; overflow-y: auto; background: white; border: 1px solid #e5e7eb; border-radius: 0.5rem; box-shadow: 0 10px 25px rgba(0,0,0,0.15); }
+.search-dropdown .search-item { padding: 8px 12px; cursor: pointer; border-bottom: 1px solid #f3f4f6; }
+.search-dropdown .search-item:hover, .search-dropdown .search-item.active { background: #eff6ff; }
+.search-dropdown .search-item .ticker-label { font-weight: 600; color: #1e40af; }
+.search-dropdown .search-item .name-label { color: #374151; }
+.search-dropdown .search-item .exchange-label { color: #9ca3af; font-size: 0.75rem; }
+</style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+
+<!-- Auth Screen -->
+<div id="auth-screen" class="flex items-center justify-center min-h-screen">
+  <div class="bg-white rounded-xl shadow-lg p-8 max-w-md w-full text-center">
+    <h1 class="text-2xl font-bold text-gray-800 mb-2">Company Research Tracker</h1>
+    <p class="text-gray-500 mb-6">Alderran Capital — Investment Research</p>
+    <button id="btn-login" onclick="handleLogin()" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-6 rounded-lg transition">
+      Sign in with Google
+    </button>
+    <p id="auth-error" class="text-red-500 text-sm mt-4 hidden"></p>
+    <div class="mt-6 border-t pt-4">
+      <label class="block text-sm text-gray-600 mb-1">Google OAuth Client ID</label>
+      <input id="input-client-id" type="text" placeholder="Enter your Client ID" class="w-full border rounded px-3 py-2 text-sm" />
+      <label class="block text-sm text-gray-600 mb-1 mt-3">FMP API Key <span class="text-gray-400">(optional — for ticker search)</span></label>
+      <input id="input-fmp-key" type="text" placeholder="Optional — for ticker search autocomplete" class="w-full border rounded px-3 py-2 text-sm" />
+      <button onclick="saveInitialConfig()" class="mt-3 text-sm text-blue-600 hover:underline">Save & Continue</button>
+    </div>
+  </div>
+</div>
+
+<!-- Main App -->
+<div id="app-shell" class="hidden">
+  <!-- Top Nav -->
+  <nav class="bg-white shadow-sm border-b">
+    <div class="max-w-7xl mx-auto px-4 flex items-center justify-between h-14">
+      <div class="flex items-center gap-6">
+        <span class="font-bold text-gray-800">Alderran Tracker</span>
+        <div class="flex gap-1">
+          <button onclick="navigate('dashboard')" data-tab="dashboard" class="px-3 py-4 text-sm text-gray-600 hover:text-blue-600 transition tab-active">Dashboard</button>
+          <button onclick="navigate('universe')" data-tab="universe" class="px-3 py-4 text-sm text-gray-600 hover:text-blue-600 transition">Universe</button>
+          <button onclick="navigate('settings')" data-tab="settings" class="px-3 py-4 text-sm text-gray-600 hover:text-blue-600 transition">Settings</button>
+        </div>
+      </div>
+      <div class="flex items-center gap-3">
+        <span id="sync-status" class="text-xs text-gray-400"></span>
+        <button onclick="refreshData()" class="text-sm bg-gray-100 hover:bg-gray-200 px-3 py-1.5 rounded transition">Refresh</button>
+        <button onclick="handleLogout()" class="text-sm text-gray-500 hover:text-red-500">Logout</button>
+      </div>
+    </div>
+  </nav>
+
+  <!-- View Container -->
+  <main id="view-container" class="max-w-7xl mx-auto px-4 py-6"></main>
+</div>
+
+<!-- Toast container -->
+<div id="toast-container"></div>
+
+<script>
+// ============================================================
+// GLOBALS & STATE
+// ============================================================
+const SCOPES = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/spreadsheets';
+const FMP_BASE = 'https://financialmodelingprep.com/api/v3';
+const STAGES = ['intake','perpetual_watch','interesting_unresolved','passed'];
+const STAGE_LABELS = { intake:'Intake Queue', perpetual_watch:'Perpetual Watch', interesting_unresolved:'Interesting / Unresolved', passed:'Passed / Rejected' };
+const STAGE_COLORS = { intake:'blue', perpetual_watch:'yellow', interesting_unresolved:'indigo', passed:'gray' };
+
+let tokenClient = null;
+let accessToken = localStorage.getItem('gd_token') || null;
+let dataFileId = localStorage.getItem('gd_fileId') || null;
+let folderId = null;
+let helperSheetId = localStorage.getItem('gd_helperSheetId') || null;
+let currentView = 'dashboard';
+let currentCompanyId = null;
+let selectedRows = new Set();
+let universeSortCol = 'ticker';
+let universeSortDir = 'asc';
+let universeFilters = { stage:[], country:[], tag:[], source:[], industry:'' };
+
+// Default data schema
+const DEFAULT_DATA = {
+  schemaVersion: 1,
+  companies: [],
+  alertRules: [],
+  alertHistory: [],
+  tags: [],
+  sources: [],
+  sessions: [],
+  settings: { fmpApiKey:'', googleClientId:'', customMetrics:[] }
+};
+
+let appData = JSON.parse(JSON.stringify(DEFAULT_DATA));
+
+// ============================================================
+// UTILITY FUNCTIONS
+// ============================================================
+function uuid() { return crypto.randomUUID(); }
+function today() { return new Date().toISOString().slice(0,10); }
+function now() { return new Date().toISOString(); }
+function escHtml(s) { const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
+function formatNum(n, decimals=0) { if(n==null||isNaN(n)) return '—'; return Number(n).toLocaleString(undefined,{minimumFractionDigits:decimals,maximumFractionDigits:decimals}); }
+function formatPct(n) { if(n==null||isNaN(n)) return '—'; return (n>=0?'+':'')+n.toFixed(1)+'%'; }
+function formatDate(iso) { if(!iso) return '—'; return new Date(iso).toLocaleDateString(); }
+function stageLabel(s) { return STAGE_LABELS[s]||s; }
+function stageBadge(s) { return `<span class="badge stage-${s}">${stageLabel(s)}</span>`; }
+
+function toast(msg, type='success') {
+  const el = document.createElement('div');
+  el.className = `toast toast-${type}`;
+  el.textContent = msg;
+  document.getElementById('toast-container').appendChild(el);
+  setTimeout(()=>{ el.style.opacity='0'; setTimeout(()=>el.remove(),300); }, 2500);
+}
+
+function pctChange(oldVal, newVal) {
+  if(!oldVal || oldVal===0) return null;
+  return ((newVal - oldVal)/Math.abs(oldVal))*100;
+}
+
+function getCompany(id) { return appData.companies.find(c=>c.id===id); }
+
+function getFirstSnapshot(company) { return company.snapshots && company.snapshots.length ? company.snapshots[0] : null; }
+function getLatestSnapshot(company) { return company.snapshots && company.snapshots.length ? company.snapshots[company.snapshots.length-1] : null; }
+function getSnapshotNear(company, daysAgo) {
+  if(!company.snapshots||!company.snapshots.length) return null;
+  const target = Date.now() - daysAgo*86400000;
+  let best=null, bestDiff=Infinity;
+  for(const s of company.snapshots) {
+    const diff = Math.abs(new Date(s.timestamp).getTime()-target);
+    if(diff<bestDiff) { bestDiff=diff; best=s; }
+  }
+  return best;
+}
+
+// ============================================================
+// AUTH & GOOGLE DRIVE
+// ============================================================
+function initGoogleAuth() {
+  const clientId = appData.settings.googleClientId || localStorage.getItem('gd_clientId') || '';
+  if(!clientId) return;
+  tokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: clientId,
+    scope: SCOPES,
+    callback: (resp) => {
+      if(resp.error) { showAuthError(resp.error); return; }
+      accessToken = resp.access_token;
+      localStorage.setItem('gd_token', accessToken);
+      onAuthSuccess();
+    }
+  });
+}
+
+function handleLogin() {
+  const clientId = document.getElementById('input-client-id').value.trim() || localStorage.getItem('gd_clientId');
+  const fmpKey = document.getElementById('input-fmp-key').value.trim() || localStorage.getItem('fmp_key');
+  if(clientId) localStorage.setItem('gd_clientId', clientId);
+  if(fmpKey) localStorage.setItem('fmp_key', fmpKey);
+  if(!clientId) { showAuthError('Please enter a Google OAuth Client ID'); return; }
+  initGoogleAuth();
+  if(tokenClient) tokenClient.requestAccessToken();
+}
+
+function saveInitialConfig() {
+  const clientId = document.getElementById('input-client-id').value.trim();
+  const fmpKey = document.getElementById('input-fmp-key').value.trim();
+  if(clientId) localStorage.setItem('gd_clientId', clientId);
+  if(fmpKey) localStorage.setItem('fmp_key', fmpKey);
+  toast('Config saved');
+}
+
+function handleLogout() {
+  accessToken = null;
+  localStorage.removeItem('gd_token');
+  document.getElementById('app-shell').classList.add('hidden');
+  document.getElementById('auth-screen').classList.remove('hidden');
+}
+
+function showAuthError(msg) {
+  const el = document.getElementById('auth-error');
+  el.textContent = msg;
+  el.classList.remove('hidden');
+}
+
+async function onAuthSuccess() {
+  document.getElementById('auth-screen').classList.add('hidden');
+  document.getElementById('app-shell').classList.remove('hidden');
+  await loadGapiClient();
+  await findOrCreateDataFile();
+  await findOrCreateHelperSheet();
+  await loadDataFromDrive();
+  if(localStorage.getItem('fmp_key') && !appData.settings.fmpApiKey) {
+    appData.settings.fmpApiKey = localStorage.getItem('fmp_key');
+  }
+  await refreshData();
+  renderCurrentView();
+  // Load stock list in background (no await — non-blocking)
+  loadStockList();
+}
+
+function loadGapiClient() {
+  return new Promise((resolve) => {
+    gapi.load('client', async () => {
+      await gapi.client.init({});
+      gapi.client.setToken({ access_token: accessToken });
+      resolve();
+    });
+  });
+}
+
+async function driveApiCall(url, options={}) {
+  const resp = await fetch(url, {
+    ...options,
+    headers: { 'Authorization': 'Bearer ' + accessToken, ...(options.headers||{}) }
+  });
+  if(resp.status === 401) { handleLogout(); throw new Error('Auth expired'); }
+  return resp;
+}
+
+async function findOrCreateDataFile() {
+  // Try to find data.json
+  const searchUrl = `https://www.googleapis.com/drive/v3/files?q=name%3D'data.json'+and+trashed%3Dfalse&fields=files(id,parents)&spaces=drive`;
+  const resp = await driveApiCall(searchUrl);
+  const result = await resp.json();
+  if(result.files && result.files.length > 0) {
+    dataFileId = result.files[0].id;
+    folderId = result.files[0].parents ? result.files[0].parents[0] : null;
+    localStorage.setItem('gd_fileId', dataFileId);
+    return;
+  }
+  // Create data.json
+  const metadata = { name: 'data.json', mimeType: 'application/json' };
+  const form = new FormData();
+  form.append('metadata', new Blob([JSON.stringify(metadata)], {type:'application/json'}));
+  form.append('file', new Blob([JSON.stringify(DEFAULT_DATA, null, 2)], {type:'application/json'}));
+  const createResp = await driveApiCall('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,parents', {
+    method: 'POST', body: form
+  });
+  const created = await createResp.json();
+  dataFileId = created.id;
+  folderId = created.parents ? created.parents[0] : null;
+  localStorage.setItem('gd_fileId', dataFileId);
+}
+
+async function loadDataFromDrive() {
+  if(!dataFileId) return;
+  try {
+    const resp = await driveApiCall(`https://www.googleapis.com/drive/v3/files/${dataFileId}?alt=media`);
+    const data = await resp.json();
+    appData = { ...DEFAULT_DATA, ...data, settings: { ...DEFAULT_DATA.settings, ...(data.settings||{}) } };
+    if(!appData.sources) appData.sources = [];
+    appData.companies.forEach(c => { if(c.source === undefined) c.source = ''; });
+  } catch(e) {
+    console.error('Failed to load data.json', e);
+    toast('Failed to load data from Drive', 'error');
+  }
+}
+
+async function saveDataToDrive() {
+  if(!dataFileId) return;
+  try {
+    const resp = await driveApiCall(`https://www.googleapis.com/upload/drive/v3/files/${dataFileId}?uploadType=media`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(appData, null, 2)
+    });
+    document.getElementById('sync-status').textContent = 'Saved ' + new Date().toLocaleTimeString();
+  } catch(e) {
+    console.error('Failed to save', e);
+    toast('Failed to save to Drive', 'error');
+  }
+}
+
+// ============================================================
+// FMP API (optional — used only for ticker search)
+// ============================================================
+function fmpFetch(endpoint, tickers) {
+  const key = appData.settings.fmpApiKey || localStorage.getItem('fmp_key') || '';
+  if(!key) return Promise.resolve([]);
+  return fetch(`${FMP_BASE}/${endpoint}/${tickers}?apikey=${key}`)
+    .then(r => r.ok ? r.json() : []).catch(() => []);
+}
+
+// ============================================================
+// GOOGLE SHEETS HELPER — QUOTE ENGINE
+// ============================================================
+const SHEETS_API = 'https://sheets.googleapis.com/v4/spreadsheets';
+const GFINANCE_ATTRS = ['price','pe','marketcap','name','currency','changepct','high52','low52','eps'];
+
+async function findOrCreateHelperSheet() {
+  // Search for existing helper sheet
+  const searchUrl = `https://www.googleapis.com/drive/v3/files?q=name%3D'_tracker_finance_helper'+and+mimeType%3D'application/vnd.google-apps.spreadsheet'+and+trashed%3Dfalse&fields=files(id)&spaces=drive`;
+  const resp = await driveApiCall(searchUrl);
+  const result = await resp.json();
+  if(result.files && result.files.length > 0) {
+    helperSheetId = result.files[0].id;
+    localStorage.setItem('gd_helperSheetId', helperSheetId);
+    return;
+  }
+  // Create new spreadsheet via Sheets API
+  const createResp = await fetch(SHEETS_API, {
+    method: 'POST',
+    headers: { 'Authorization': 'Bearer ' + accessToken, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ properties: { title: '_tracker_finance_helper' } })
+  });
+  const sheet = await createResp.json();
+  helperSheetId = sheet.spreadsheetId;
+  localStorage.setItem('gd_helperSheetId', helperSheetId);
+}
+
+async function sheetsWrite(range, values) {
+  const url = `${SHEETS_API}/${helperSheetId}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`;
+  await fetch(url, {
+    method: 'PUT',
+    headers: { 'Authorization': 'Bearer ' + accessToken, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ range, values })
+  });
+}
+
+async function sheetsRead(range) {
+  const url = `${SHEETS_API}/${helperSheetId}/values/${encodeURIComponent(range)}`;
+  const resp = await fetch(url, { headers: { 'Authorization': 'Bearer ' + accessToken } });
+  const data = await resp.json();
+  return data.values || [];
+}
+
+async function sheetsClear(range) {
+  const url = `${SHEETS_API}/${helperSheetId}/values/${encodeURIComponent(range)}:clear`;
+  await fetch(url, { method: 'POST', headers: { 'Authorization': 'Bearer ' + accessToken, 'Content-Type': 'application/json' }, body: '{}' });
+}
+
+async function fetchQuotesBatch(tickers) {
+  if(!tickers.length || !helperSheetId) return {};
+  // Clear sheet
+  await sheetsClear('Sheet1');
+  // Build rows: col A = ticker, col B-J = GOOGLEFINANCE formulas
+  const header = ['Ticker','Price','P/E','Market Cap','Name','Currency','Change %','52w High','52w Low','EPS'];
+  const rows = [header];
+  for(let i = 0; i < tickers.length; i++) {
+    const row = i + 2; // data starts at row 2
+    const t = tickers[i];
+    rows.push([
+      t,
+      `=IFERROR(GOOGLEFINANCE("${t}","price"),"")`,
+      `=IFERROR(GOOGLEFINANCE("${t}","pe"),"")`,
+      `=IFERROR(GOOGLEFINANCE("${t}","marketcap"),"")`,
+      `=IFERROR(GOOGLEFINANCE("${t}","name"),"")`,
+      `=IFERROR(GOOGLEFINANCE("${t}","currency"),"")`,
+      `=IFERROR(GOOGLEFINANCE("${t}","changepct"),"")`,
+      `=IFERROR(GOOGLEFINANCE("${t}","high52"),"")`,
+      `=IFERROR(GOOGLEFINANCE("${t}","low52"),"")`,
+      `=IFERROR(GOOGLEFINANCE("${t}","eps"),"")`
+    ]);
+  }
+  // Write all at once
+  await sheetsWrite(`Sheet1!A1:J${tickers.length + 1}`, rows);
+  // Wait for GOOGLEFINANCE to calculate
+  await new Promise(r => setTimeout(r, 3000));
+  // Read results
+  const results = {};
+  const readData = await sheetsRead(`Sheet1!A2:J${tickers.length + 1}`);
+  for(const row of readData) {
+    const ticker = row[0];
+    if(!ticker) continue;
+    const price = parseFloat(row[1]);
+    const pe = parseFloat(row[2]);
+    const marketCap = parseFloat(row[3]);
+    const name = row[4] || '';
+    const currency = row[5] || '';
+    const changePct = parseFloat(row[6]);
+    // Only count as valid if we got a price
+    if(!isNaN(price)) {
+      results[ticker] = {
+        symbol: ticker, price, pe: isNaN(pe)?null:pe,
+        marketCap: isNaN(marketCap)?null:marketCap,
+        name, currency, changePct: isNaN(changePct)?null:changePct,
+        high52: parseFloat(row[7])||null, low52: parseFloat(row[8])||null,
+        eps: parseFloat(row[9])||null
+      };
+    }
+  }
+  return results;
+}
+
+async function fetchProfileViaSheets(ticker) {
+  if(!helperSheetId) return null;
+  // Use a small area of the sheet for single lookups
+  const rows = [
+    ['Ticker','Name','Currency','Exchange'],
+    [
+      ticker,
+      `=IFERROR(GOOGLEFINANCE("${ticker}","name"),"")`,
+      `=IFERROR(GOOGLEFINANCE("${ticker}","currency"),"")`,
+      `=IFERROR(GOOGLEFINANCE("${ticker}","exchangename"),"")`
+    ]
+  ];
+  await sheetsWrite('Sheet1!L1:O2', rows);
+  await new Promise(r => setTimeout(r, 2000));
+  const data = await sheetsRead('Sheet1!L2:O2');
+  if(!data.length || !data[0][1]) return null;
+  return { companyName: data[0][0]||ticker, name: data[0][0]||ticker, currency: data[0][1]||'', exchange: data[0][2]||'', country:'', industry:'', sector:'' };
+}
+
+async function fetchProfile(ticker) {
+  // Try FMP first if key available (has richer data: country, industry, sector)
+  const key = appData.settings.fmpApiKey || localStorage.getItem('fmp_key') || '';
+  if(key) {
+    const data = await fmpFetch('profile', ticker);
+    if(Array.isArray(data) && data.length) return data[0];
+  }
+  // Fall back to Google Sheets
+  return fetchProfileViaSheets(ticker);
+}
+
+// ============================================================
+// STOCK LIST CACHE & SEARCH
+// ============================================================
+let stockList = null; // array of {s: symbol, n: name, e: exchange}
+let stockListMode = 'none'; // 'full' = cached list, 'live' = per-query /search, 'none' = not loaded
+const STOCK_LIST_CACHE_KEY = 'fmp_stock_list';
+const STOCK_LIST_TS_KEY = 'fmp_stock_list_ts';
+const STOCK_LIST_MAX_AGE = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+async function loadStockList() {
+  if(stockList && stockListMode === 'full') return;
+  // Try localStorage cache first
+  const cached = localStorage.getItem(STOCK_LIST_CACHE_KEY);
+  const cachedTs = Number(localStorage.getItem(STOCK_LIST_TS_KEY) || 0);
+  if(cached && (Date.now() - cachedTs) < STOCK_LIST_MAX_AGE) {
+    try { stockList = JSON.parse(cached); stockListMode = 'full'; return; } catch(e) {}
+  }
+  // Try fetching full list, fall back to live search
+  await fetchStockList();
+}
+
+async function fetchStockList() {
+  const key = appData.settings.fmpApiKey || localStorage.getItem('fmp_key') || '';
+  if(!key) return;
+  // Try multiple endpoints in order of preference
+  const endpoints = ['stock/list', 'available-traded/list'];
+  for(const endpoint of endpoints) {
+    try {
+      const resp = await fetch(`${FMP_BASE}/${endpoint}?apikey=${key}`);
+      if(!resp.ok) continue;
+      const data = await resp.json();
+      if(!Array.isArray(data) || !data.length) continue;
+      // Check it's not an error response
+      if(data[0] && typeof data[0] === 'object' && data[0].symbol) {
+        stockList = data.map(s => ({ s: s.symbol||'', n: s.name||'', e: s.exchangeShortName||s.exchange||'' })).filter(s => s.s);
+        stockListMode = 'full';
+        try {
+          localStorage.setItem(STOCK_LIST_CACHE_KEY, JSON.stringify(stockList));
+          localStorage.setItem(STOCK_LIST_TS_KEY, String(Date.now()));
+        } catch(e) { console.warn('Stock list too large for localStorage, using memory only'); }
+        toast('Stock list loaded (' + stockList.length.toLocaleString() + ' tickers)');
+        return;
+      }
+    } catch(e) { continue; }
+  }
+  // All full-list endpoints failed — fall back to live search mode
+  stockListMode = 'live';
+  console.log('Full stock list not available on this FMP plan. Using live search.');
+}
+
+function searchStockListLocal(query) {
+  if(!stockList || !query) return [];
+  const q = query.toLowerCase();
+  const exact = [], startsWith = [], contains = [];
+  for(const item of stockList) {
+    const sym = item.s.toLowerCase();
+    const name = item.n.toLowerCase();
+    if(sym === q) { exact.push(item); continue; }
+    if(sym.startsWith(q)) { startsWith.push(item); continue; }
+    if(name.startsWith(q) || sym.includes(q) || name.includes(q)) { contains.push(item); }
+    if(exact.length + startsWith.length + contains.length >= 50) break;
+  }
+  return [...exact, ...startsWith, ...contains].slice(0, 20);
+}
+
+async function searchStockListLive(query) {
+  const key = appData.settings.fmpApiKey || localStorage.getItem('fmp_key') || '';
+  if(!key || !query) return [];
+  try {
+    const resp = await fetch(`${FMP_BASE}/search?query=${encodeURIComponent(query)}&limit=20&apikey=${key}`);
+    if(!resp.ok) return [];
+    const data = await resp.json();
+    if(!Array.isArray(data)) return [];
+    return data.map(s => ({ s: s.symbol||'', n: s.name||'', e: s.exchangeShortName||s.stockExchange||'' })).filter(s => s.s);
+  } catch(e) { return []; }
+}
+
+let searchDebounceTimer = null;
+let searchActiveIndex = -1;
+
+function onTickerSearchInput(el) {
+  const query = el.value.trim();
+  clearTimeout(searchDebounceTimer);
+  if(!query || query.length < 2) { hideSearchDropdown(); return; }
+
+  if(stockListMode === 'full') {
+    // Instant local search
+    searchDebounceTimer = setTimeout(() => {
+      showSearchDropdown(searchStockListLocal(query));
+    }, 50);
+  } else {
+    // Debounced live API search
+    showSearchDropdown([{s:'', n:'Searching...', e:''}]);
+    searchDebounceTimer = setTimeout(async () => {
+      const results = await searchStockListLive(query);
+      showSearchDropdown(results);
+    }, 350);
+  }
+}
+
+function showSearchDropdown(results) {
+  let dd = document.getElementById('ticker-search-dropdown');
+  if(!dd) return;
+  searchActiveIndex = -1;
+  if(!results.length) { dd.innerHTML = '<div class="p-3 text-sm text-gray-400">No matches found</div>'; dd.classList.remove('hidden'); return; }
+  dd.innerHTML = results.map((r, i) => {
+    if(!r.s) return `<div class="search-item" style="cursor:default"><span class="name-label text-gray-400">${escHtml(r.n)}</span></div>`;
+    return `<div class="search-item" data-index="${i}" onclick="selectSearchResult('${escHtml(r.s)}')" onmouseenter="searchActiveIndex=${i};highlightSearchItem()">
+      <span class="ticker-label">${escHtml(r.s)}</span>
+      <span class="name-label ml-2">${escHtml(r.n)}</span>
+      <span class="exchange-label ml-2">${escHtml(r.e)}</span>
+    </div>`;
+  }).join('');
+  dd.classList.remove('hidden');
+}
+
+function hideSearchDropdown() {
+  const dd = document.getElementById('ticker-search-dropdown');
+  if(dd) dd.classList.add('hidden');
+}
+
+function highlightSearchItem() {
+  const dd = document.getElementById('ticker-search-dropdown');
+  if(!dd) return;
+  dd.querySelectorAll('.search-item').forEach((el, i) => {
+    el.classList.toggle('active', i === searchActiveIndex);
+  });
+}
+
+function onTickerSearchKeydown(e) {
+  const dd = document.getElementById('ticker-search-dropdown');
+  if(!dd || dd.classList.contains('hidden')) return;
+  const items = dd.querySelectorAll('.search-item');
+  if(e.key === 'ArrowDown') { e.preventDefault(); searchActiveIndex = Math.min(searchActiveIndex + 1, items.length - 1); highlightSearchItem(); }
+  else if(e.key === 'ArrowUp') { e.preventDefault(); searchActiveIndex = Math.max(searchActiveIndex - 1, 0); highlightSearchItem(); }
+  else if(e.key === 'Enter' && searchActiveIndex >= 0) {
+    e.preventDefault();
+    const sym = items[searchActiveIndex]?.getAttribute('onclick')?.match(/'([^']+)'/)?.[1];
+    if(sym) selectSearchResult(sym);
+  }
+  else if(e.key === 'Escape') { hideSearchDropdown(); }
+}
+
+function selectSearchResult(symbol) {
+  document.getElementById('add-ticker').value = symbol;
+  hideSearchDropdown();
+  lookupTicker(); // fetch live quote + profile for the selected ticker
+}
+
+// ============================================================
+// REFRESH & SNAPSHOTS
+// ============================================================
+async function refreshData() {
+  const activeTickers = appData.companies.filter(c=>!c.archived).map(c=>c.ticker);
+  if(!activeTickers.length) { updateSyncStatus(); return; }
+  toast('Refreshing quotes via Google Finance...');
+  const quotes = await fetchQuotesBatch(activeTickers);
+  const todayStr = today();
+
+  for(const company of appData.companies) {
+    if(company.archived) continue;
+    const q = quotes[company.ticker];
+    if(!q) { company._fetchError = true; continue; }
+    company._fetchError = false;
+    company.marketCap = q.marketCap;
+    if(q.name && !company.name) company.name = q.name;
+    if(q.currency && !company.currency) company.currency = q.currency;
+
+    // Check if today's snapshot already exists
+    const hasToday = company.snapshots && company.snapshots.some(s => s.timestamp.slice(0,10) === todayStr);
+    if(!hasToday) {
+      const snap = { timestamp: now(), price: q.price, pe: q.pe, marketCap: q.marketCap };
+      if(q.eps) snap.eps = q.eps;
+      if(q.high52) snap.high52 = q.high52;
+      if(q.low52) snap.low52 = q.low52;
+      if(!company.snapshots) company.snapshots = [];
+      company.snapshots.push(snap);
+    }
+    company.dateLastUpdated = now();
+  }
+
+  // Run alert engine
+  evaluateAlerts();
+
+  // Record session
+  appData.sessions.push({ timestamp: now(), companiesRefreshed: activeTickers.length });
+
+  await saveDataToDrive();
+  updateSyncStatus();
+  renderCurrentView();
+}
+
+function updateSyncStatus() {
+  const el = document.getElementById('sync-status');
+  const lastSession = appData.sessions.length ? appData.sessions[appData.sessions.length-1] : null;
+  el.textContent = lastSession ? 'Last refresh: ' + new Date(lastSession.timestamp).toLocaleString() : '';
+}
+
+// ============================================================
+// ALERT ENGINE
+// ============================================================
+function evaluateAlerts() {
+  const rules = appData.alertRules.filter(r=>r.active);
+  const lastSessionTime = appData.sessions.length >= 2 ? appData.sessions[appData.sessions.length-2].timestamp : null;
+
+  for(const rule of rules) {
+    const companies = getCompaniesInScope(rule);
+    for(const company of companies) {
+      const snap = getLatestSnapshot(company);
+      const firstSnap = getFirstSnapshot(company);
+      if(!snap) continue;
+
+      let metricValue = snap[rule.metric];
+      let triggered = false;
+
+      if(rule.metric === 'price_pct_change_since_add' && firstSnap) {
+        metricValue = pctChange(firstSnap.price, snap.price);
+      }
+
+      switch(rule.operator) {
+        case 'lt': triggered = metricValue != null && metricValue < rule.value; break;
+        case 'gt': triggered = metricValue != null && metricValue > rule.value; break;
+        case 'pct_decrease_since_add':
+          if(firstSnap && firstSnap[rule.metric==='price_pct_change_since_add'?'price':rule.metric]) {
+            const base = firstSnap[rule.metric==='price_pct_change_since_add'?'price':rule.metric];
+            const curr = snap[rule.metric==='price_pct_change_since_add'?'price':rule.metric];
+            triggered = curr!=null && ((base-curr)/Math.abs(base))*100 >= rule.value;
+          }
+          break;
+        case 'pct_increase_since_add':
+          if(firstSnap && firstSnap[rule.metric==='price_pct_change_since_add'?'price':rule.metric]) {
+            const base = firstSnap[rule.metric==='price_pct_change_since_add'?'price':rule.metric];
+            const curr = snap[rule.metric==='price_pct_change_since_add'?'price':rule.metric];
+            triggered = curr!=null && ((curr-base)/Math.abs(base))*100 >= rule.value;
+          }
+          break;
+        case 'within_pct_of_target':
+          triggered = company.targetPriceMax && snap.price <= company.targetPriceMax * (1 + rule.value/100);
+          break;
+      }
+
+      if(triggered) {
+        const existing = appData.alertHistory.find(a => a.ruleId===rule.id && a.companyId===company.id && a.timestamp.slice(0,10)===today());
+        if(!existing) {
+          const isNew = !appData.alertHistory.some(a => a.ruleId===rule.id && a.companyId===company.id && lastSessionTime && a.timestamp < lastSessionTime);
+          appData.alertHistory.push({
+            id: uuid(), ruleId: rule.id, companyId: company.id, ticker: company.ticker,
+            metricValue, timestamp: now(), isNew, reviewed: false
+          });
+          rule.lastTriggered = now();
+        }
+      }
+    }
+  }
+}
+
+function getCompaniesInScope(rule) {
+  return appData.companies.filter(c => {
+    if(c.archived) return false;
+    switch(rule.scopeType) {
+      case 'all': return true;
+      case 'stage': return c.stage === rule.scopeValue;
+      case 'country': return c.country === rule.scopeValue;
+      case 'tag': return c.tags && c.tags.includes(rule.scopeValue);
+      case 'ticker': return c.ticker === rule.scopeValue;
+      default: return true;
+    }
+  });
+}
+
+// ============================================================
+// NAVIGATION
+// ============================================================
+function navigate(view, companyId=null) {
+  currentView = view;
+  currentCompanyId = companyId;
+  selectedRows.clear();
+  document.querySelectorAll('[data-tab]').forEach(el => {
+    el.classList.toggle('tab-active', el.dataset.tab === view || (view==='detail' && el.dataset.tab==='universe'));
+  });
+  renderCurrentView();
+}
+
+function renderCurrentView() {
+  const container = document.getElementById('view-container');
+  switch(currentView) {
+    case 'dashboard': container.innerHTML = renderDashboard(); break;
+    case 'universe': container.innerHTML = renderUniverse(); break;
+    case 'detail': container.innerHTML = renderDetail(); break;
+    case 'settings': container.innerHTML = renderSettings(); break;
+  }
+}
+
+// ============================================================
+// DASHBOARD VIEW
+// ============================================================
+function renderDashboard() {
+  const newAlerts = appData.alertHistory.filter(a => !a.reviewed);
+  const stageCounts = {};
+  STAGES.forEach(s => stageCounts[s] = appData.companies.filter(c=>!c.archived && c.stage===s).length);
+
+  return `
+    <div class="space-y-6">
+      <div class="flex items-center justify-between">
+        <h1 class="text-2xl font-bold text-gray-800">Dashboard</h1>
+        <div class="flex gap-2">
+          <button onclick="openAddCompanyModal()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition">+ Add Company</button>
+          <button onclick="openWhatChangedModal()" class="bg-white border hover:bg-gray-50 px-4 py-2 rounded-lg text-sm font-medium transition">What Changed</button>
+        </div>
+      </div>
+
+      <!-- Alerts -->
+      <div class="bg-white rounded-xl shadow-sm border p-4">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="font-semibold text-gray-700">Alerts</h2>
+          <span class="badge ${newAlerts.length ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-500'}">${newAlerts.length} unreviewed</span>
+        </div>
+        ${newAlerts.length === 0 ? '<p class="text-sm text-gray-400">No new alerts</p>' : `
+          <div class="space-y-2 max-h-60 overflow-y-auto">
+            ${newAlerts.slice(0,20).map(a => {
+              const rule = appData.alertRules.find(r=>r.id===a.ruleId);
+              const company = getCompany(a.companyId);
+              return `<div class="flex items-center justify-between text-sm p-2 bg-red-50 rounded">
+                <div>
+                  <span class="font-medium">${escHtml(a.ticker)}</span>
+                  ${company ? ' — ' + escHtml(company.name) : ''}
+                  ${rule ? ' — ' + escHtml(rule.name) : ''}
+                  <span class="text-gray-500 ml-2">Value: ${formatNum(a.metricValue,2)}</span>
+                </div>
+                <button onclick="markAlertReviewed('${a.id}')" class="text-xs text-blue-600 hover:underline">Mark reviewed</button>
+              </div>`;
+            }).join('')}
+          </div>
+        `}
+      </div>
+
+      <!-- Stage Cards -->
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        ${STAGES.map(s => `
+          <div onclick="navigate('universe'); universeFilters.stage=['${s}']; renderCurrentView();" class="bg-white rounded-xl shadow-sm border p-4 cursor-pointer hover:shadow-md transition">
+            <div class="text-sm text-gray-500">${stageLabel(s)}</div>
+            <div class="text-3xl font-bold text-gray-800 mt-1">${stageCounts[s]}</div>
+          </div>
+        `).join('')}
+      </div>
+
+      <!-- Last Refreshed -->
+      <p class="text-xs text-gray-400">${updateSyncStatusText()}</p>
+    </div>
+  `;
+}
+
+function updateSyncStatusText() {
+  const last = appData.sessions.length ? appData.sessions[appData.sessions.length-1] : null;
+  return last ? 'Last refreshed: ' + new Date(last.timestamp).toLocaleString() : 'Not yet refreshed';
+}
+
+function markAlertReviewed(alertId) {
+  const a = appData.alertHistory.find(x=>x.id===alertId);
+  if(a) { a.reviewed = true; saveDataToDrive(); renderCurrentView(); }
+}
+
+// ============================================================
+// UNIVERSE VIEW
+// ============================================================
+function getFilteredCompanies() {
+  return appData.companies.filter(c => {
+    if(c.archived) return false;
+    if(universeFilters.stage.length && !universeFilters.stage.includes(c.stage)) return false;
+    if(universeFilters.country.length && !universeFilters.country.includes(c.country)) return false;
+    if(universeFilters.tag.length && !universeFilters.tag.some(t=>c.tags&&c.tags.includes(t))) return false;
+    if(universeFilters.source.length && !universeFilters.source.includes(c.source)) return false;
+    if(universeFilters.industry && c.industry !== universeFilters.industry) return false;
+    return true;
+  });
+}
+
+function sortCompanies(list) {
+  const col = universeSortCol;
+  const dir = universeSortDir === 'asc' ? 1 : -1;
+  return [...list].sort((a,b) => {
+    let va = getColValue(a, col), vb = getColValue(b, col);
+    if(va == null) va = '';
+    if(vb == null) vb = '';
+    if(typeof va === 'number' && typeof vb === 'number') return (va - vb) * dir;
+    return String(va).localeCompare(String(vb)) * dir;
+  });
+}
+
+function getColValue(c, col) {
+  const snap = getLatestSnapshot(c);
+  const firstSnap = getFirstSnapshot(c);
+  switch(col) {
+    case 'ticker': return c.ticker;
+    case 'name': return c.name;
+    case 'country': return c.country;
+    case 'stage': return c.stage;
+    case 'source': return c.source || '';
+    case 'tags': return (c.tags||[]).join(', ');
+    case 'price': return snap ? snap.price : null;
+    case 'pe': return snap ? snap.pe : null;
+    case 'peAtAdd': return firstSnap ? firstSnap.pe : null;
+    case 'pricePct': return (snap && firstSnap && firstSnap.price) ? pctChange(firstSnap.price, snap.price) : null;
+    case 'marketCap': return snap ? snap.marketCap : null;
+    case 'dateAdded': return c.dateAdded;
+    default: return '';
+  }
+}
+
+function toggleSort(col) {
+  if(universeSortCol === col) universeSortDir = universeSortDir==='asc'?'desc':'asc';
+  else { universeSortCol = col; universeSortDir = 'asc'; }
+  renderCurrentView();
+}
+
+function toggleRowSelect(id) {
+  if(selectedRows.has(id)) selectedRows.delete(id); else selectedRows.add(id);
+  renderCurrentView();
+}
+
+function toggleSelectAll(companies) {
+  if(selectedRows.size === companies.length) selectedRows.clear();
+  else companies.forEach(c => selectedRows.add(c.id));
+  renderCurrentView();
+}
+
+function renderUniverse() {
+  const filtered = getFilteredCompanies();
+  const sorted = sortCompanies(filtered);
+  const allCountries = [...new Set(appData.companies.map(c=>c.country).filter(Boolean))].sort();
+  const allIndustries = [...new Set(appData.companies.map(c=>c.industry).filter(Boolean))].sort();
+  const allTags = appData.tags || [];
+  const allSources = appData.sources || [];
+
+  const thClass = 'px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider';
+  const sortIcon = (col) => universeSortCol===col ? (universeSortDir==='asc'?' ▲':' ▼') : '';
+
+  return `
+    <div class="space-y-4">
+      <div class="flex items-center justify-between">
+        <h1 class="text-2xl font-bold text-gray-800">Universe</h1>
+        <div class="flex gap-2">
+          <button onclick="openAddCompanyModal()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition">+ Add Company</button>
+          <button onclick="openBulkImportModal()" class="bg-white border hover:bg-gray-50 px-4 py-2 rounded-lg text-sm font-medium transition">Bulk Import CSV</button>
+        </div>
+      </div>
+
+      <!-- Filter Bar -->
+      <div class="bg-white rounded-lg shadow-sm border p-3 flex flex-wrap gap-2 items-center sticky top-0 z-20">
+        <label class="text-xs font-semibold text-gray-500">Filters:</label>
+        ${renderMultiFilter('Stage', 'stage', STAGES.map(s=>({v:s,l:stageLabel(s)})))}
+        ${renderMultiFilter('Country', 'country', allCountries.map(c=>({v:c,l:c})))}
+        ${renderMultiFilter('Tag', 'tag', allTags.map(t=>({v:t,l:t})))}
+        ${renderMultiFilter('Source', 'source', allSources.map(s=>({v:s,l:s})))}
+        <select onchange="universeFilters.industry=this.value;renderCurrentView();" class="text-xs border rounded px-2 py-1">
+          <option value="">All Industries</option>
+          ${allIndustries.map(i=>`<option value="${escHtml(i)}" ${universeFilters.industry===i?'selected':''}>${escHtml(i)}</option>`).join('')}
+        </select>
+        <button onclick="universeFilters={stage:[],country:[],tag:[],source:[],industry:''};renderCurrentView();" class="text-xs text-red-500 hover:underline ml-2">Clear All</button>
+      </div>
+
+      <!-- Bulk Action Bar -->
+      ${selectedRows.size > 0 ? `
+        <div class="bulk-bar bg-blue-50 border border-blue-200 rounded-lg p-3 flex items-center gap-4">
+          <span class="text-sm font-medium text-blue-800">${selectedRows.size} selected</span>
+          <button onclick="openBulkTagModal()" class="text-sm bg-white border rounded px-3 py-1 hover:bg-gray-50">Set Tags</button>
+          <button onclick="openBulkSourceModal()" class="text-sm bg-white border rounded px-3 py-1 hover:bg-gray-50">Set Source</button>
+          <button onclick="openBulkStageModal()" class="text-sm bg-white border rounded px-3 py-1 hover:bg-gray-50">Set Stage</button>
+          <button onclick="selectedRows.clear();renderCurrentView();" class="text-sm text-gray-500 hover:underline ml-auto">Deselect All</button>
+        </div>
+      ` : ''}
+
+      <!-- Table -->
+      <div class="bg-white rounded-xl shadow-sm border overflow-x-auto">
+        <table class="min-w-full divide-y divide-gray-200">
+          <thead class="bg-gray-50">
+            <tr>
+              <th class="px-3 py-2"><input type="checkbox" ${selectedRows.size===sorted.length&&sorted.length?'checked':''} onchange="toggleSelectAll(${JSON.stringify(sorted.map(c=>({id:c.id}))).replace(/"/g,'&quot;').replace(/'/g,'\\\'')});"></th>
+              <th class="${thClass}" onclick="toggleSort('ticker')">Ticker${sortIcon('ticker')}</th>
+              <th class="${thClass}" onclick="toggleSort('name')">Name${sortIcon('name')}</th>
+              <th class="${thClass}" onclick="toggleSort('country')">Country${sortIcon('country')}</th>
+              <th class="${thClass}" onclick="toggleSort('stage')">Stage${sortIcon('stage')}</th>
+              <th class="${thClass}" onclick="toggleSort('source')">Source${sortIcon('source')}</th>
+              <th class="${thClass}">Tags</th>
+              <th class="${thClass}" onclick="toggleSort('price')">Price${sortIcon('price')}</th>
+              <th class="${thClass}" onclick="toggleSort('pe')">P/E${sortIcon('pe')}</th>
+              <th class="${thClass}" onclick="toggleSort('peAtAdd')">P/E@Add${sortIcon('peAtAdd')}</th>
+              <th class="${thClass}" onclick="toggleSort('pricePct')">Price %Chg${sortIcon('pricePct')}</th>
+              <th class="${thClass}" onclick="toggleSort('marketCap')">Mkt Cap${sortIcon('marketCap')}</th>
+              <th class="${thClass}" onclick="toggleSort('dateAdded')">Added${sortIcon('dateAdded')}</th>
+              <th class="${thClass}"></th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-100">
+            ${sorted.map(c => renderUniverseRow(c)).join('')}
+            ${sorted.length===0?'<tr><td colspan="14" class="text-center py-8 text-gray-400">No companies match filters</td></tr>':''}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function renderUniverseRow(c) {
+  const snap = getLatestSnapshot(c);
+  const firstSnap = getFirstSnapshot(c);
+  const pricePctVal = (snap && firstSnap && firstSnap.price) ? pctChange(firstSnap.price, snap.price) : null;
+  const hasAlert = appData.alertHistory.some(a=>a.companyId===c.id && !a.reviewed);
+  const sel = selectedRows.has(c.id);
+
+  return `<tr class="${sel?'bg-blue-50':'hover:bg-gray-50'} cursor-pointer" onclick="if(event.target.type!=='checkbox')navigate('detail','${c.id}')">
+    <td class="px-3 py-2"><input type="checkbox" ${sel?'checked':''} onclick="event.stopPropagation();toggleRowSelect('${c.id}')"></td>
+    <td class="px-3 py-2 text-sm font-medium">${escHtml(c.ticker)} ${c._fetchError?'<span class="text-yellow-500" title="Fetch error">⚠</span>':''}</td>
+    <td class="px-3 py-2 text-sm">${escHtml(c.name||'')}</td>
+    <td class="px-3 py-2 text-sm">${escHtml(c.country||'')}</td>
+    <td class="px-3 py-2 text-sm">${stageBadge(c.stage)}</td>
+    <td class="px-3 py-2 text-sm">${escHtml(c.source||'—')}</td>
+    <td class="px-3 py-2 text-sm">${(c.tags||[]).map(t=>`<span class="filter-chip">${escHtml(t)}</span>`).join(' ')}</td>
+    <td class="px-3 py-2 text-sm text-right">${snap?formatNum(snap.price,2):'—'}</td>
+    <td class="px-3 py-2 text-sm text-right">${snap?formatNum(snap.pe,1):'—'}</td>
+    <td class="px-3 py-2 text-sm text-right">${firstSnap?formatNum(firstSnap.pe,1):'—'}</td>
+    <td class="px-3 py-2 text-sm text-right ${pricePctVal!=null?(pricePctVal>=0?'text-green-600':'text-red-600'):''}">${formatPct(pricePctVal)}</td>
+    <td class="px-3 py-2 text-sm text-right">${snap?formatNum(snap.marketCap):'—'}</td>
+    <td class="px-3 py-2 text-sm">${formatDate(c.dateAdded)}</td>
+    <td class="px-3 py-2 text-sm flex gap-1">
+      ${c.googleDocLink?`<a href="${escHtml(c.googleDocLink)}" target="_blank" onclick="event.stopPropagation()" class="text-blue-500 hover:text-blue-700" title="Doc">📄</a>`:''}
+      ${hasAlert?'<span class="text-red-500" title="Alert">🔔</span>':''}
+    </td>
+  </tr>`;
+}
+
+function renderMultiFilter(label, key, options) {
+  const selected = universeFilters[key] || [];
+  return `
+    <div class="relative inline-block">
+      <button onclick="this.nextElementSibling.classList.toggle('hidden')" class="text-xs border rounded px-2 py-1 hover:bg-gray-50">
+        ${label} ${selected.length ? `(${selected.length})` : ''}
+      </button>
+      <div class="hidden absolute top-full left-0 mt-1 bg-white border rounded shadow-lg z-30 p-2 min-w-[160px] max-h-48 overflow-y-auto">
+        ${options.map(o => `
+          <label class="flex items-center gap-2 text-xs py-0.5 cursor-pointer">
+            <input type="checkbox" ${selected.includes(o.v)?'checked':''} onchange="toggleFilter('${key}','${o.v.replace(/'/g,"\\'")}');this.closest('.relative').querySelector('div').classList.add('hidden');">
+            ${escHtml(o.l)}
+          </label>
+        `).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function toggleFilter(key, value) {
+  const arr = universeFilters[key];
+  const idx = arr.indexOf(value);
+  if(idx >= 0) arr.splice(idx, 1); else arr.push(value);
+  renderCurrentView();
+}
+
+// Fix selectAll for universe
+function toggleSelectAll() {
+  const filtered = sortCompanies(getFilteredCompanies());
+  if(selectedRows.size === filtered.length && filtered.length > 0) selectedRows.clear();
+  else { selectedRows.clear(); filtered.forEach(c => selectedRows.add(c.id)); }
+  renderCurrentView();
+}
+
+// ============================================================
+// COMPANY DETAIL VIEW
+// ============================================================
+function renderDetail() {
+  const c = getCompany(currentCompanyId);
+  if(!c) return '<p class="text-gray-500">Company not found</p>';
+  const snap = getLatestSnapshot(c);
+  const firstSnap = getFirstSnapshot(c);
+  const sixMonthSnap = getSnapshotNear(c, 180);
+  const allMetrics = ['price','pe','marketCap',...(appData.settings.customMetrics||[]),...(c.customMetrics||[])];
+  const companyAlertRules = appData.alertRules.filter(r=>r.scopeType==='ticker'&&r.scopeValue===c.ticker);
+
+  return `
+    <div class="space-y-6">
+      <!-- Header -->
+      <div class="flex items-center gap-4">
+        <button onclick="navigate('universe')" class="text-gray-400 hover:text-gray-600 text-lg">←</button>
+        <div>
+          <h1 class="text-2xl font-bold">${escHtml(c.ticker)} — ${escHtml(c.name||'')}</h1>
+          <p class="text-sm text-gray-500">${escHtml(c.country||'')} · ${escHtml(c.industry||'')} · ${escHtml(c.sector||'')} · ${escHtml(c.currency||'')} · Mkt Cap: ${formatNum(c.marketCap)}</p>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <!-- Left Column -->
+        <div class="space-y-4">
+          <div class="bg-white rounded-xl shadow-sm border p-4 space-y-3">
+            <div>
+              <label class="text-xs font-semibold text-gray-500">Stage</label>
+              <select onchange="changeCompanyStage('${c.id}',this.value)" class="block w-full border rounded px-2 py-1 text-sm mt-1">
+                ${STAGES.map(s=>`<option value="${s}" ${c.stage===s?'selected':''}>${stageLabel(s)}</option>`).join('')}
+              </select>
+            </div>
+            <div>
+              <label class="text-xs font-semibold text-gray-500">Source</label>
+              <select onchange="changeCompanyField('${c.id}','source',this.value)" class="block w-full border rounded px-2 py-1 text-sm mt-1">
+                <option value="">— None —</option>
+                ${(appData.sources||[]).map(s=>`<option value="${escHtml(s)}" ${c.source===s?'selected':''}>${escHtml(s)}</option>`).join('')}
+              </select>
+            </div>
+            <div>
+              <label class="text-xs font-semibold text-gray-500">Tags</label>
+              <div class="flex flex-wrap gap-1 mt-1">
+                ${(c.tags||[]).map(t=>`<span class="filter-chip">${escHtml(t)} <button onclick="removeTag('${c.id}','${t.replace(/'/g,"\\'")}')">×</button></span>`).join('')}
+                <select onchange="if(this.value){addTag('${c.id}',this.value);this.value='';}" class="text-xs border rounded px-2 py-0.5">
+                  <option value="">+ Tag</option>
+                  ${(appData.tags||[]).filter(t=>!(c.tags||[]).includes(t)).map(t=>`<option value="${escHtml(t)}">${escHtml(t)}</option>`).join('')}
+                </select>
+              </div>
+            </div>
+            <div>
+              <label class="text-xs font-semibold text-gray-500">Target Price Range</label>
+              <div class="flex gap-2 mt-1">
+                <input type="number" value="${c.targetPriceMin||''}" onchange="changeCompanyField('${c.id}','targetPriceMin',Number(this.value)||null)" placeholder="Min" class="w-1/2 border rounded px-2 py-1 text-sm">
+                <input type="number" value="${c.targetPriceMax||''}" onchange="changeCompanyField('${c.id}','targetPriceMax',Number(this.value)||null)" placeholder="Max" class="w-1/2 border rounded px-2 py-1 text-sm">
+              </div>
+            </div>
+            <div>
+              <label class="text-xs font-semibold text-gray-500">Google Doc Link</label>
+              <input type="url" value="${escHtml(c.googleDocLink||'')}" onchange="changeCompanyField('${c.id}','googleDocLink',this.value)" class="block w-full border rounded px-2 py-1 text-sm mt-1" placeholder="https://docs.google.com/...">
+            </div>
+          </div>
+        </div>
+
+        <!-- Right Column -->
+        <div class="space-y-4">
+          <div class="bg-white rounded-xl shadow-sm border p-4 space-y-3">
+            <div>
+              <label class="text-xs font-semibold text-gray-500">Why Interesting</label>
+              <textarea onchange="changeCompanyField('${c.id}','whyInteresting',this.value)" class="block w-full border rounded px-2 py-1 text-sm mt-1" rows="2">${escHtml(c.whyInteresting||'')}</textarea>
+            </div>
+            <div>
+              <label class="text-xs font-semibold text-gray-500">Notes</label>
+              <textarea onchange="changeCompanyField('${c.id}','notes',this.value)" class="block w-full border rounded px-2 py-1 text-sm mt-1" rows="4">${escHtml(c.notes||'')}</textarea>
+            </div>
+            ${c.stage==='passed'?`
+            <div>
+              <label class="text-xs font-semibold text-gray-500">Why Passed</label>
+              <textarea onchange="changeCompanyField('${c.id}','whyPassed',this.value)" class="block w-full border rounded px-2 py-1 text-sm mt-1" rows="2">${escHtml(c.whyPassed||'')}</textarea>
+            </div>`:''}
+          </div>
+        </div>
+      </div>
+
+      <!-- Snapshot Comparison -->
+      <div class="bg-white rounded-xl shadow-sm border p-4">
+        <h3 class="font-semibold text-gray-700 mb-3">Snapshot Comparison</h3>
+        <table class="min-w-full text-sm">
+          <thead><tr class="border-b">
+            <th class="text-left py-1 text-gray-500">Metric</th>
+            <th class="text-right py-1 text-gray-500">At Add</th>
+            <th class="text-right py-1 text-gray-500">~6 Mo Ago</th>
+            <th class="text-right py-1 text-gray-500">Today</th>
+            <th class="text-right py-1 text-gray-500">Δ (Add→Now)</th>
+          </tr></thead>
+          <tbody>
+            ${allMetrics.map(m => {
+              const fv = firstSnap ? firstSnap[m] : null;
+              const sv = sixMonthSnap ? sixMonthSnap[m] : null;
+              const cv = snap ? snap[m] : null;
+              const delta = (fv && cv) ? pctChange(fv, cv) : null;
+              return `<tr class="border-b border-gray-50">
+                <td class="py-1 font-medium">${escHtml(m)}</td>
+                <td class="text-right py-1">${formatNum(fv,2)}</td>
+                <td class="text-right py-1">${formatNum(sv,2)}</td>
+                <td class="text-right py-1">${formatNum(cv,2)}</td>
+                <td class="text-right py-1 ${delta!=null?(delta>=0?'text-green-600':'text-red-600'):''}">${formatPct(delta)}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Stage History -->
+      <div class="bg-white rounded-xl shadow-sm border p-4">
+        <h3 class="font-semibold text-gray-700 mb-3">Stage History</h3>
+        <div class="space-y-2">
+          ${(c.stageHistory||[]).map(h => `
+            <div class="flex items-center gap-3 text-sm">
+              <span class="text-gray-400 w-36">${formatDate(h.timestamp)}</span>
+              ${stageBadge(h.stage)}
+              ${h.note ? `<span class="text-gray-500">— ${escHtml(h.note)}</span>` : ''}
+            </div>
+          `).join('')}
+          ${(!c.stageHistory||!c.stageHistory.length)?'<p class="text-sm text-gray-400">No history</p>':''}
+        </div>
+      </div>
+
+      <!-- Company Alert Rules -->
+      <div class="bg-white rounded-xl shadow-sm border p-4">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="font-semibold text-gray-700">Alert Rules for ${escHtml(c.ticker)}</h3>
+          <button onclick="openAlertRuleModal('ticker','${escHtml(c.ticker)}')" class="text-sm text-blue-600 hover:underline">+ Add Rule</button>
+        </div>
+        ${companyAlertRules.length === 0 ? '<p class="text-sm text-gray-400">No rules</p>' : `
+          <div class="space-y-2">
+            ${companyAlertRules.map(r => `
+              <div class="flex items-center justify-between text-sm p-2 bg-gray-50 rounded">
+                <div>
+                  <span class="font-medium">${escHtml(r.name)}</span>
+                  <span class="text-gray-500 ml-2">${escHtml(r.metric)} ${escHtml(r.operator)} ${r.value}</span>
+                </div>
+                <div class="flex gap-2">
+                  <button onclick="toggleAlertRule('${r.id}')" class="text-xs ${r.active?'text-green-600':'text-gray-400'}">${r.active?'Active':'Inactive'}</button>
+                  <button onclick="deleteAlertRule('${r.id}')" class="text-xs text-red-500 hover:underline">Delete</button>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        `}
+      </div>
+    </div>
+  `;
+}
+
+// ============================================================
+// SETTINGS VIEW
+// ============================================================
+function renderSettings() {
+  return `
+    <div class="space-y-6 max-w-2xl">
+      <h1 class="text-2xl font-bold text-gray-800">Settings</h1>
+
+      <!-- Data Source -->
+      <div class="bg-white rounded-xl shadow-sm border p-4">
+        <h3 class="font-semibold text-gray-700 mb-2">Market Data Source</h3>
+        <p class="text-sm text-gray-600 mb-3">Prices, P/E, and market cap are fetched via <strong>Google Finance</strong> (through a hidden Google Sheet). This supports international tickers and requires no API key.</p>
+        <div class="text-xs text-gray-400">Helper Sheet ID: ${helperSheetId ? '<code>'+escHtml(helperSheetId)+'</code>' : 'Not created yet'}</div>
+      </div>
+
+      <!-- FMP API Key (optional) -->
+      <div class="bg-white rounded-xl shadow-sm border p-4">
+        <h3 class="font-semibold text-gray-700 mb-2">FMP API Key <span class="text-xs font-normal text-gray-400">(optional)</span></h3>
+        <p class="text-xs text-gray-500 mb-2">Only needed for ticker search autocomplete and richer company profiles (country, industry, sector). Leave blank to use manual ticker entry.</p>
+        <div class="flex gap-2">
+          <input id="settings-fmp-key" type="text" value="${escHtml(appData.settings.fmpApiKey||'')}" class="flex-1 border rounded px-3 py-2 text-sm" placeholder="Your FMP API key (optional)">
+          <button onclick="saveFmpKey()" class="bg-blue-600 text-white px-4 py-2 rounded text-sm">Save</button>
+          <button onclick="validateFmpKey()" class="border px-4 py-2 rounded text-sm hover:bg-gray-50">Validate</button>
+        </div>
+        <p id="fmp-validate-result" class="text-xs mt-1"></p>
+        <div class="mt-3 flex items-center gap-3">
+          <button onclick="fetchStockList()" class="text-sm border px-3 py-1.5 rounded hover:bg-gray-50">Refresh Stock List</button>
+          <span class="text-xs text-gray-400">${stockListMode==='full' ? stockList.length.toLocaleString()+' tickers cached' : stockListMode==='live' ? 'Using live search via FMP' : 'No FMP key — type tickers manually'} ${localStorage.getItem(STOCK_LIST_TS_KEY) ? '· Cached '+new Date(Number(localStorage.getItem(STOCK_LIST_TS_KEY))).toLocaleDateString() : ''}</span>
+        </div>
+      </div>
+
+      <!-- Google OAuth Client ID -->
+      <div class="bg-white rounded-xl shadow-sm border p-4">
+        <h3 class="font-semibold text-gray-700 mb-2">Google OAuth Client ID</h3>
+        <input id="settings-client-id" type="text" value="${escHtml(appData.settings.googleClientId||localStorage.getItem('gd_clientId')||'')}" class="w-full border rounded px-3 py-2 text-sm" placeholder="Client ID">
+        <button onclick="appData.settings.googleClientId=document.getElementById('settings-client-id').value;localStorage.setItem('gd_clientId',appData.settings.googleClientId);saveDataToDrive();toast('Saved');" class="mt-2 bg-blue-600 text-white px-4 py-2 rounded text-sm">Save</button>
+      </div>
+
+      <!-- Custom Metrics -->
+      <div class="bg-white rounded-xl shadow-sm border p-4">
+        <h3 class="font-semibold text-gray-700 mb-2">Custom Metrics (FMP fields)</h3>
+        <div class="flex flex-wrap gap-1 mb-2">
+          ${(appData.settings.customMetrics||[]).map(m => `
+            <span class="filter-chip">${escHtml(m)} <button onclick="removeCustomMetric('${escHtml(m)}')">×</button></span>
+          `).join('')}
+        </div>
+        <div class="flex gap-2">
+          <input id="new-custom-metric" type="text" class="flex-1 border rounded px-3 py-2 text-sm" placeholder="e.g. evToEbitda">
+          <button onclick="addCustomMetric()" class="bg-blue-600 text-white px-4 py-2 rounded text-sm">Add</button>
+        </div>
+      </div>
+
+      <!-- Tag Library -->
+      <div class="bg-white rounded-xl shadow-sm border p-4">
+        <h3 class="font-semibold text-gray-700 mb-2">Tag Library</h3>
+        <div class="space-y-1 mb-2">
+          ${(appData.tags||[]).map((t,i) => `
+            <div class="flex items-center gap-2 text-sm">
+              <input type="text" value="${escHtml(t)}" onchange="renameTag(${i},this.value)" class="flex-1 border rounded px-2 py-1">
+              <button onclick="deleteTag(${i})" class="text-red-500 hover:underline text-xs">Delete</button>
+            </div>
+          `).join('')}
+        </div>
+        <div class="flex gap-2">
+          <input id="new-tag" type="text" class="flex-1 border rounded px-3 py-2 text-sm" placeholder="New tag">
+          <button onclick="addNewTag()" class="bg-blue-600 text-white px-4 py-2 rounded text-sm">Add</button>
+        </div>
+      </div>
+
+      <!-- Source Library -->
+      <div class="bg-white rounded-xl shadow-sm border p-4">
+        <h3 class="font-semibold text-gray-700 mb-2">Source Library</h3>
+        <div class="space-y-1 mb-2">
+          ${(appData.sources||[]).map((s,i) => `
+            <div class="flex items-center gap-2 text-sm">
+              <input type="text" value="${escHtml(s)}" onchange="renameSource(${i},this.value)" class="flex-1 border rounded px-2 py-1">
+              <button onclick="deleteSource(${i})" class="text-red-500 hover:underline text-xs">Delete</button>
+            </div>
+          `).join('')}
+        </div>
+        <div class="flex gap-2">
+          <input id="new-source" type="text" class="flex-1 border rounded px-3 py-2 text-sm" placeholder="e.g. Screen, Conference, Referral">
+          <button onclick="addNewSource()" class="bg-blue-600 text-white px-4 py-2 rounded text-sm">Add</button>
+        </div>
+      </div>
+
+      <!-- Alert Rules (Global) -->
+      <div class="bg-white rounded-xl shadow-sm border p-4">
+        <div class="flex items-center justify-between mb-2">
+          <h3 class="font-semibold text-gray-700">Alert Rules</h3>
+          <button onclick="openAlertRuleModal()" class="text-sm text-blue-600 hover:underline">+ Add Rule</button>
+        </div>
+        <div class="space-y-1">
+          ${appData.alertRules.map(r => `
+            <div class="flex items-center justify-between text-sm p-2 bg-gray-50 rounded">
+              <div>
+                <span class="font-medium">${escHtml(r.name)}</span>
+                <span class="text-gray-500 ml-2">[${r.scopeType}${r.scopeValue?':'+r.scopeValue:''}] ${r.metric} ${r.operator} ${r.value}</span>
+              </div>
+              <div class="flex gap-2">
+                <button onclick="toggleAlertRule('${r.id}')" class="text-xs ${r.active?'text-green-600':'text-gray-400'}">${r.active?'Active':'Inactive'}</button>
+                <button onclick="deleteAlertRule('${r.id}')" class="text-xs text-red-500 hover:underline">Delete</button>
+              </div>
+            </div>
+          `).join('')}
+          ${appData.alertRules.length===0?'<p class="text-sm text-gray-400">No alert rules configured</p>':''}
+        </div>
+      </div>
+
+      <!-- Alert History -->
+      <div class="bg-white rounded-xl shadow-sm border p-4">
+        <h3 class="font-semibold text-gray-700 mb-2">Alert History</h3>
+        <div class="space-y-1 max-h-60 overflow-y-auto">
+          ${appData.alertHistory.slice(-20).reverse().map(a => {
+            const rule = appData.alertRules.find(r=>r.id===a.ruleId);
+            return `<div class="flex items-center justify-between text-sm p-2 ${a.reviewed?'bg-gray-50':'bg-yellow-50'} rounded">
+              <div>
+                <span class="font-medium">${escHtml(a.ticker)}</span>
+                ${rule ? ` — ${escHtml(rule.name)}` : ''}
+                <span class="text-gray-400 ml-2">${formatDate(a.timestamp)}</span>
+              </div>
+              ${!a.reviewed?`<button onclick="markAlertReviewed('${a.id}')" class="text-xs text-blue-600 hover:underline">Mark reviewed</button>`:'<span class="text-xs text-gray-400">Reviewed</span>'}
+            </div>`;
+          }).join('')}
+          ${appData.alertHistory.length===0?'<p class="text-sm text-gray-400">No alerts triggered yet</p>':''}
+        </div>
+      </div>
+
+      <!-- Data Export/Import -->
+      <div class="bg-white rounded-xl shadow-sm border p-4">
+        <h3 class="font-semibold text-gray-700 mb-2">Data Management</h3>
+        <div class="flex gap-2">
+          <button onclick="exportData()" class="border px-4 py-2 rounded text-sm hover:bg-gray-50">Export data.json</button>
+          <label class="border px-4 py-2 rounded text-sm hover:bg-gray-50 cursor-pointer">
+            Import Backup
+            <input type="file" accept=".json" onchange="importData(event)" class="hidden">
+          </label>
+        </div>
+        <p class="text-xs text-gray-400 mt-2">Last sync: ${appData.sessions.length ? formatDate(appData.sessions[appData.sessions.length-1].timestamp) : 'Never'}</p>
+      </div>
+    </div>
+  `;
+}
+
+// ============================================================
+// SETTINGS ACTIONS
+// ============================================================
+function saveFmpKey() {
+  appData.settings.fmpApiKey = document.getElementById('settings-fmp-key').value.trim();
+  localStorage.setItem('fmp_key', appData.settings.fmpApiKey);
+  saveDataToDrive();
+  toast('FMP API key saved');
+}
+
+async function validateFmpKey() {
+  const key = document.getElementById('settings-fmp-key').value.trim();
+  const el = document.getElementById('fmp-validate-result');
+  try {
+    const resp = await fetch(`${FMP_BASE}/quote/AAPL?apikey=${key}`);
+    const data = await resp.json();
+    if(Array.isArray(data) && data.length) { el.textContent = '✓ Valid'; el.className='text-xs mt-1 text-green-600'; }
+    else { el.textContent = '✗ Invalid or no data'; el.className='text-xs mt-1 text-red-500'; }
+  } catch(e) { el.textContent = '✗ Error: ' + e.message; el.className='text-xs mt-1 text-red-500'; }
+}
+
+function addCustomMetric() {
+  const v = document.getElementById('new-custom-metric').value.trim();
+  if(!v) return;
+  if(!appData.settings.customMetrics) appData.settings.customMetrics = [];
+  if(!appData.settings.customMetrics.includes(v)) appData.settings.customMetrics.push(v);
+  saveDataToDrive(); renderCurrentView();
+}
+
+function removeCustomMetric(m) {
+  appData.settings.customMetrics = (appData.settings.customMetrics||[]).filter(x=>x!==m);
+  saveDataToDrive(); renderCurrentView();
+}
+
+function addNewTag() {
+  const v = document.getElementById('new-tag').value.trim();
+  if(!v) return;
+  if(!appData.tags.includes(v)) appData.tags.push(v);
+  saveDataToDrive(); renderCurrentView();
+}
+
+function renameTag(idx, newName) {
+  const old = appData.tags[idx];
+  appData.tags[idx] = newName;
+  appData.companies.forEach(c => { if(c.tags) c.tags = c.tags.map(t=>t===old?newName:t); });
+  saveDataToDrive(); renderCurrentView();
+}
+
+function deleteTag(idx) {
+  const old = appData.tags[idx];
+  appData.tags.splice(idx, 1);
+  appData.companies.forEach(c => { if(c.tags) c.tags = c.tags.filter(t=>t!==old); });
+  saveDataToDrive(); renderCurrentView();
+}
+
+function addNewSource() {
+  const v = document.getElementById('new-source').value.trim();
+  if(!v) return;
+  if(!appData.sources.includes(v)) appData.sources.push(v);
+  saveDataToDrive(); renderCurrentView();
+}
+
+function renameSource(idx, newName) {
+  const old = appData.sources[idx];
+  appData.sources[idx] = newName;
+  appData.companies.forEach(c => { if(c.source === old) c.source = newName; });
+  saveDataToDrive(); renderCurrentView();
+}
+
+function deleteSource(idx) {
+  const old = appData.sources[idx];
+  appData.sources.splice(idx, 1);
+  appData.companies.forEach(c => { if(c.source === old) c.source = ''; });
+  saveDataToDrive(); renderCurrentView();
+}
+
+function exportData() {
+  const blob = new Blob([JSON.stringify(appData, null, 2)], {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'data.json';
+  a.click();
+}
+
+function importData(event) {
+  const file = event.target.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const data = JSON.parse(e.target.result);
+      appData = { ...DEFAULT_DATA, ...data, settings: { ...DEFAULT_DATA.settings, ...(data.settings||{}) } };
+      if(!appData.sources) appData.sources = [];
+      saveDataToDrive();
+      toast('Data imported');
+      renderCurrentView();
+    } catch(err) { toast('Invalid JSON file', 'error'); }
+  };
+  reader.readAsText(file);
+}
+
+// ============================================================
+// COMPANY MUTATIONS
+// ============================================================
+function changeCompanyStage(companyId, newStage) {
+  const c = getCompany(companyId);
+  if(!c) return;
+
+  if(newStage === 'passed') {
+    const reason = prompt('Why passed?');
+    if(reason === null) { renderCurrentView(); return; }
+    c.whyPassed = reason;
+  }
+  if(newStage === 'perpetual_watch' && (!c.targetPriceMin || !c.targetPriceMax)) {
+    if(!confirm('This company has no target price range set. Continue anyway?')) { renderCurrentView(); return; }
+  }
+  const oldStage = c.stage;
+  c.stage = newStage;
+  if(!c.stageHistory) c.stageHistory = [];
+  c.stageHistory.push({ stage: newStage, timestamp: now(), note: oldStage + ' → ' + newStage });
+  c.dateLastUpdated = now();
+  saveDataToDrive();
+  renderCurrentView();
+}
+
+function changeCompanyField(companyId, field, value) {
+  const c = getCompany(companyId);
+  if(!c) return;
+  c[field] = value;
+  c.dateLastUpdated = now();
+  saveDataToDrive();
+}
+
+function addTag(companyId, tag) {
+  const c = getCompany(companyId);
+  if(!c) return;
+  if(!c.tags) c.tags = [];
+  if(!c.tags.includes(tag)) c.tags.push(tag);
+  c.dateLastUpdated = now();
+  saveDataToDrive();
+  renderCurrentView();
+}
+
+function removeTag(companyId, tag) {
+  const c = getCompany(companyId);
+  if(!c) return;
+  c.tags = (c.tags||[]).filter(t=>t!==tag);
+  c.dateLastUpdated = now();
+  saveDataToDrive();
+  renderCurrentView();
+}
+
+// ============================================================
+// ALERT RULE ACTIONS
+// ============================================================
+function toggleAlertRule(ruleId) {
+  const r = appData.alertRules.find(x=>x.id===ruleId);
+  if(r) { r.active = !r.active; saveDataToDrive(); renderCurrentView(); }
+}
+
+function deleteAlertRule(ruleId) {
+  appData.alertRules = appData.alertRules.filter(r=>r.id!==ruleId);
+  saveDataToDrive(); renderCurrentView();
+}
+
+// ============================================================
+// MODALS
+// ============================================================
+function showModal(title, content) {
+  const existing = document.getElementById('modal-overlay');
+  if(existing) existing.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-overlay';
+  div.className = 'modal-overlay fixed inset-0 z-50 flex items-center justify-center p-4';
+  div.onclick = (e) => { if(e.target===div) div.remove(); };
+  div.innerHTML = `
+    <div class="bg-white rounded-xl shadow-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-6" onclick="event.stopPropagation()">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-bold">${title}</h2>
+        <button onclick="document.getElementById('modal-overlay').remove()" class="text-gray-400 hover:text-gray-600 text-xl">×</button>
+      </div>
+      ${content}
+    </div>
+  `;
+  document.body.appendChild(div);
+}
+
+function closeModal() {
+  const el = document.getElementById('modal-overlay');
+  if(el) el.remove();
+}
+
+// ============================================================
+// ADD COMPANY MODAL
+// ============================================================
+function openAddCompanyModal() {
+  showModal('Add Company', `
+    <div class="space-y-3">
+      <div>
+        <label class="text-sm font-medium text-gray-700">Search Ticker or Company Name</label>
+        <div class="relative mt-1">
+          <input id="add-ticker" type="text" class="w-full border rounded px-3 py-2 text-sm" placeholder="e.g. AAPL, TYO:9983, LON:SHEL, NSE:RELIANCE..." autocomplete="off"
+            oninput="onTickerSearchInput(this)" onkeydown="onTickerSearchKeydown(event)" onfocus="onTickerSearchInput(this)">
+          <div id="ticker-search-dropdown" class="search-dropdown hidden"></div>
+        </div>
+        <p class="text-xs text-gray-400 mt-1">${stockListMode==='full'?'Instant search from cached list.':'Live search via FMP API.'} <button onclick="fetchStockList().then(()=>toast(stockListMode==='full'?'Full list loaded':'Using live search'))" class="text-blue-500 hover:underline">Refresh list</button></p>
+      </div>
+      <div id="add-lookup-result"></div>
+      <div>
+        <label class="text-sm font-medium text-gray-700">Stage</label>
+        <select id="add-stage" class="block w-full border rounded px-3 py-2 text-sm mt-1">
+          ${STAGES.map(s=>`<option value="${s}">${stageLabel(s)}</option>`).join('')}
+        </select>
+      </div>
+      <div>
+        <label class="text-sm font-medium text-gray-700">Source</label>
+        <select id="add-source" class="block w-full border rounded px-3 py-2 text-sm mt-1">
+          <option value="">— None —</option>
+          ${(appData.sources||[]).map(s=>`<option value="${escHtml(s)}">${escHtml(s)}</option>`).join('')}
+        </select>
+      </div>
+      <div>
+        <label class="text-sm font-medium text-gray-700">Tags</label>
+        <div class="flex flex-wrap gap-1 mt-1" id="add-tags-container">
+          ${(appData.tags||[]).map(t=>`<label class="filter-chip cursor-pointer"><input type="checkbox" value="${escHtml(t)}" class="add-tag-cb mr-1">${escHtml(t)}</label>`).join('')}
+        </div>
+      </div>
+      <div>
+        <label class="text-sm font-medium text-gray-700">Why Interesting</label>
+        <textarea id="add-why" class="block w-full border rounded px-3 py-2 text-sm mt-1" rows="2"></textarea>
+      </div>
+      <button onclick="confirmAddCompany()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 rounded-lg transition">Add Company</button>
+    </div>
+  `);
+}
+
+let lookupCache = null;
+
+async function lookupTicker() {
+  const ticker = document.getElementById('add-ticker').value.trim().toUpperCase();
+  if(!ticker) return;
+  const el = document.getElementById('add-lookup-result');
+  el.innerHTML = '<p class="text-sm text-gray-500">Looking up via Google Finance...</p>';
+  // Fetch quote via Google Sheets and profile in parallel
+  const [quotes, profile] = await Promise.all([
+    fetchQuotesBatch([ticker]),
+    fetchProfile(ticker)
+  ]);
+  const quote = quotes[ticker] || null;
+  if(!profile && !quote) { el.innerHTML = '<p class="text-sm text-red-500">Ticker not found. Try the Google Finance format (e.g. TYO:9983, LON:SHEL, NSE:RELIANCE).</p>'; lookupCache=null; return; }
+  lookupCache = { profile, quote, ticker };
+  const name = profile?.companyName || quote?.name || ticker;
+  const currency = profile?.currency || quote?.currency || '';
+  el.innerHTML = `<div class="text-sm bg-green-50 p-3 rounded">
+    <p class="font-medium">${escHtml(name)}</p>
+    <p class="text-gray-600">${escHtml(profile?.country||'')} ${profile?.industry?'· '+escHtml(profile.industry):''} ${currency?'· '+escHtml(currency):''}</p>
+    <p class="text-gray-600">Price: ${quote?formatNum(quote.price,2):'—'} · P/E: ${quote?formatNum(quote.pe,1):'—'} · Mkt Cap: ${quote?formatNum(quote.marketCap):'—'}</p>
+  </div>`;
+}
+
+function confirmAddCompany() {
+  const ticker = document.getElementById('add-ticker').value.trim().toUpperCase();
+  if(!ticker) { toast('Enter a ticker', 'error'); return; }
+  const stage = document.getElementById('add-stage').value;
+  const source = document.getElementById('add-source').value;
+  const why = document.getElementById('add-why').value.trim();
+  const tags = [...document.querySelectorAll('.add-tag-cb:checked')].map(cb=>cb.value);
+
+  if(stage === 'passed') {
+    const reason = prompt('Why passed?');
+    if(reason === null) return;
+    var whyPassed = reason;
+  }
+
+  const p = lookupCache?.profile || {};
+  const q = lookupCache?.quote || {};
+
+  const company = {
+    id: uuid(), ticker, name: p.companyName || q.name || ticker,
+    country: p.country || '', industry: p.industry || '', sector: p.sector || '', currency: p.currency || q.currency || '',
+    marketCap: q.marketCap || null,
+    stage, source, tags, whyInteresting: why, notes: '', whyPassed: whyPassed || '',
+    googleDocLink: '', targetPriceMin: null, targetPriceMax: null,
+    dateAdded: now(), dateLastUpdated: now(),
+    stageHistory: [{ stage, timestamp: now(), note: 'Initial add' }],
+    customMetrics: [],
+    snapshots: q.price ? [{ timestamp: now(), price: q.price, pe: q.pe, marketCap: q.marketCap }] : [],
+    archived: false
+  };
+
+  appData.companies.push(company);
+  lookupCache = null;
+  saveDataToDrive();
+  closeModal();
+  toast(`Added ${ticker}`);
+  renderCurrentView();
+}
+
+// ============================================================
+// BULK IMPORT CSV MODAL
+// ============================================================
+function openBulkImportModal() {
+  showModal('Bulk Import CSV', `
+    <div class="space-y-3">
+      <p class="text-sm text-gray-600">Upload a CSV with columns: <strong>ticker, date</strong> (e.g. <code>AAPL,2025-06-15</code>). Header row is optional.</p>
+      <input type="file" accept=".csv,.txt" id="bulk-csv-file" class="text-sm">
+      <div>
+        <label class="text-sm font-medium text-gray-700">Shared Tags (optional)</label>
+        <div class="flex flex-wrap gap-1 mt-1">
+          ${(appData.tags||[]).map(t=>`<label class="filter-chip cursor-pointer"><input type="checkbox" value="${escHtml(t)}" class="bulk-tag-cb mr-1">${escHtml(t)}</label>`).join('')}
+        </div>
+      </div>
+      <div>
+        <label class="text-sm font-medium text-gray-700">Shared Source (optional)</label>
+        <select id="bulk-source" class="block w-full border rounded px-3 py-2 text-sm mt-1">
+          <option value="">— None —</option>
+          ${(appData.sources||[]).map(s=>`<option value="${escHtml(s)}">${escHtml(s)}</option>`).join('')}
+        </select>
+      </div>
+      <button onclick="processBulkImport()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 rounded-lg transition">Import</button>
+      <div id="bulk-import-result"></div>
+    </div>
+  `);
+}
+
+async function processBulkImport() {
+  const fileInput = document.getElementById('bulk-csv-file');
+  if(!fileInput.files.length) { toast('Select a file', 'error'); return; }
+  const text = await fileInput.files[0].text();
+  const lines = text.split(/[\r\n]+/).map(l=>l.trim()).filter(Boolean);
+  // Skip header row if first field doesn't look like a ticker
+  const firstFields = lines[0].split(',').map(f=>f.trim());
+  const hasHeader = /^(ticker|symbol)/i.test(firstFields[0]);
+  const dataLines = hasHeader ? lines.slice(1) : lines;
+
+  // Parse each line as: ticker, date
+  const rows = dataLines.map(line => {
+    const parts = line.split(',').map(f=>f.trim());
+    const ticker = parts[0].toUpperCase();
+    const rawDate = parts[1] || '';
+    // Parse date: accept YYYY-MM-DD, MM/DD/YYYY, etc.
+    let dateAdded = '';
+    if(rawDate) {
+      const parsed = new Date(rawDate);
+      if(!isNaN(parsed.getTime())) dateAdded = parsed.toISOString();
+    }
+    return { ticker, dateAdded };
+  }).filter(r => r.ticker);
+
+  if(!rows.length) { toast('No tickers found', 'error'); return; }
+
+  const tags = [...document.querySelectorAll('.bulk-tag-cb:checked')].map(cb=>cb.value);
+  const source = document.getElementById('bulk-source').value;
+  const resultEl = document.getElementById('bulk-import-result');
+  resultEl.innerHTML = '<p class="text-sm text-gray-500">Fetching data via Google Finance for ' + rows.length + ' tickers (may take a few seconds)...</p>';
+
+  const tickers = rows.map(r=>r.ticker);
+  const quotes = await fetchQuotesBatch(tickers);
+  let added = 0, failed = [];
+
+  for(const row of rows) {
+    const ticker = row.ticker;
+    if(appData.companies.some(c=>c.ticker===ticker)) { failed.push(ticker + ' (duplicate)'); continue; }
+    const q = quotes[ticker];
+    if(!q) { failed.push(ticker + ' (not found)'); continue; }
+
+    let profile = null;
+    try { profile = await fetchProfile(ticker); } catch(e) {}
+
+    const p = profile || {};
+    const addedDate = row.dateAdded || now();
+    appData.companies.push({
+      id: uuid(), ticker, name: p.companyName || q.name || ticker,
+      country: p.country || '', industry: p.industry || '', sector: p.sector || '', currency: p.currency || q.currency || '',
+      marketCap: q.marketCap || null,
+      stage: 'intake', source: source || '', tags: [...tags],
+      whyInteresting: '', notes: '', whyPassed: '',
+      googleDocLink: '', targetPriceMin: null, targetPriceMax: null,
+      dateAdded: addedDate, dateLastUpdated: now(),
+      stageHistory: [{ stage: 'intake', timestamp: addedDate, note: 'Bulk import' }],
+      customMetrics: [],
+      snapshots: [{ timestamp: addedDate, price: q.price, pe: q.pe, marketCap: q.marketCap }],
+      archived: false
+    });
+    added++;
+  }
+
+  await saveDataToDrive();
+  resultEl.innerHTML = `<div class="text-sm mt-2">
+    <p class="text-green-600 font-medium">✓ Added ${added} companies</p>
+    ${failed.length ? `<p class="text-red-500 mt-1">Failed: ${failed.join(', ')}</p>` : ''}
+  </div>`;
+  if(added > 0) renderCurrentView();
+}
+
+// ============================================================
+// BULK ACTION MODALS
+// ============================================================
+function openBulkTagModal() {
+  showModal('Set Tags (Bulk)', `
+    <div class="space-y-3">
+      <p class="text-sm text-gray-600">Select tags to add to ${selectedRows.size} companies:</p>
+      <div class="flex flex-wrap gap-1">
+        ${(appData.tags||[]).map(t=>`<label class="filter-chip cursor-pointer"><input type="checkbox" value="${escHtml(t)}" class="bulk-action-tag-cb mr-1">${escHtml(t)}</label>`).join('')}
+      </div>
+      <button onclick="applyBulkTags()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 rounded-lg transition">Apply Tags</button>
+    </div>
+  `);
+}
+
+function applyBulkTags() {
+  const tags = [...document.querySelectorAll('.bulk-action-tag-cb:checked')].map(cb=>cb.value);
+  for(const id of selectedRows) {
+    const c = getCompany(id);
+    if(!c) continue;
+    if(!c.tags) c.tags = [];
+    for(const t of tags) { if(!c.tags.includes(t)) c.tags.push(t); }
+    c.dateLastUpdated = now();
+  }
+  saveDataToDrive(); closeModal(); selectedRows.clear();
+  toast(`Tags applied to ${selectedRows.size||tags.length} companies`);
+  renderCurrentView();
+}
+
+function openBulkSourceModal() {
+  showModal('Set Source (Bulk)', `
+    <div class="space-y-3">
+      <p class="text-sm text-gray-600">Select source for ${selectedRows.size} companies:</p>
+      <select id="bulk-action-source" class="block w-full border rounded px-3 py-2 text-sm">
+        <option value="">— None —</option>
+        ${(appData.sources||[]).map(s=>`<option value="${escHtml(s)}">${escHtml(s)}</option>`).join('')}
+      </select>
+      <button onclick="applyBulkSource()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 rounded-lg transition">Apply Source</button>
+    </div>
+  `);
+}
+
+function applyBulkSource() {
+  const source = document.getElementById('bulk-action-source').value;
+  const count = selectedRows.size;
+  for(const id of selectedRows) {
+    const c = getCompany(id);
+    if(c) { c.source = source; c.dateLastUpdated = now(); }
+  }
+  saveDataToDrive(); closeModal(); selectedRows.clear();
+  toast(`Source set for ${count} companies`);
+  renderCurrentView();
+}
+
+function openBulkStageModal() {
+  showModal('Set Stage (Bulk)', `
+    <div class="space-y-3">
+      <p class="text-sm text-gray-600">Select stage for ${selectedRows.size} companies:</p>
+      <select id="bulk-action-stage" class="block w-full border rounded px-3 py-2 text-sm">
+        ${STAGES.map(s=>`<option value="${s}">${stageLabel(s)}</option>`).join('')}
+      </select>
+      <div id="bulk-stage-extra"></div>
+      <button onclick="applyBulkStage()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 rounded-lg transition">Apply Stage</button>
+    </div>
+    <script>
+      document.getElementById('bulk-action-stage').addEventListener('change', function() {
+        const extra = document.getElementById('bulk-stage-extra');
+        if(this.value === 'passed') {
+          extra.innerHTML = '<div class="mt-2"><label class="text-sm font-medium text-gray-700">Why Passed (applied to all)</label><textarea id="bulk-why-passed" class="block w-full border rounded px-3 py-2 text-sm mt-1" rows="2"></textarea></div>';
+        } else if(this.value === 'perpetual_watch') {
+          const noTarget = [...selectedRows].filter(id => { const c = getCompany(id); return c && (!c.targetPriceMin || !c.targetPriceMax); }).length;
+          extra.innerHTML = noTarget ? '<p class="text-yellow-600 text-sm mt-2">⚠ ' + noTarget + ' selected companies lack target prices</p>' : '';
+        } else { extra.innerHTML = ''; }
+      });
+    <\/script>
+  `);
+}
+
+function applyBulkStage() {
+  const stage = document.getElementById('bulk-action-stage').value;
+  let whyPassed = '';
+  if(stage === 'passed') {
+    const el = document.getElementById('bulk-why-passed');
+    whyPassed = el ? el.value.trim() : '';
+    if(!whyPassed) { whyPassed = prompt('Why passed?') || ''; }
+  }
+  if(stage === 'perpetual_watch') {
+    const noTarget = [...selectedRows].filter(id => { const c = getCompany(id); return c && (!c.targetPriceMin || !c.targetPriceMax); }).length;
+    if(noTarget && !confirm(`${noTarget} companies lack target prices. Continue?`)) return;
+  }
+  const count = selectedRows.size;
+  for(const id of selectedRows) {
+    const c = getCompany(id);
+    if(!c) continue;
+    const oldStage = c.stage;
+    c.stage = stage;
+    if(stage === 'passed') c.whyPassed = whyPassed;
+    if(!c.stageHistory) c.stageHistory = [];
+    c.stageHistory.push({ stage, timestamp: now(), note: 'Bulk: ' + oldStage + ' → ' + stage });
+    c.dateLastUpdated = now();
+  }
+  saveDataToDrive(); closeModal(); selectedRows.clear();
+  toast(`Stage set to ${stageLabel(stage)} for ${count} companies`);
+  renderCurrentView();
+}
+
+// ============================================================
+// ALERT RULE MODAL
+// ============================================================
+function openAlertRuleModal(defaultScope, defaultScopeValue) {
+  const allCountries = [...new Set(appData.companies.map(c=>c.country).filter(Boolean))].sort();
+  const allTickers = appData.companies.map(c=>c.ticker).sort();
+  const metricsOptions = ['price','pe','marketCap','price_pct_change_since_add',...(appData.settings.customMetrics||[])];
+  const operators = [
+    {v:'lt',l:'Less than'},{v:'gt',l:'Greater than'},
+    {v:'pct_decrease_since_add',l:'% decrease since add ≥'},
+    {v:'pct_increase_since_add',l:'% increase since add ≥'},
+    {v:'within_pct_of_target',l:'Within % of target price'}
+  ];
+
+  showModal('Add Alert Rule', `
+    <div class="space-y-3">
+      <div>
+        <label class="text-sm font-medium text-gray-700">Rule Name</label>
+        <input id="rule-name" type="text" class="block w-full border rounded px-3 py-2 text-sm mt-1" placeholder="e.g. Japan stocks down 15%">
+      </div>
+      <div>
+        <label class="text-sm font-medium text-gray-700">Scope</label>
+        <select id="rule-scope" class="block w-full border rounded px-3 py-2 text-sm mt-1" onchange="updateRuleScopeValue()">
+          <option value="all" ${defaultScope==='all'?'selected':''}>All Companies</option>
+          <option value="stage" ${defaultScope==='stage'?'selected':''}>Stage</option>
+          <option value="country" ${defaultScope==='country'?'selected':''}>Country</option>
+          <option value="tag" ${defaultScope==='tag'?'selected':''}>Tag</option>
+          <option value="ticker" ${defaultScope==='ticker'?'selected':''}>Ticker</option>
+        </select>
+      </div>
+      <div id="rule-scope-value-container">
+        ${defaultScope==='ticker'?`<input id="rule-scope-value" type="text" value="${escHtml(defaultScopeValue||'')}" class="block w-full border rounded px-3 py-2 text-sm" readonly>`:''}
+      </div>
+      <div>
+        <label class="text-sm font-medium text-gray-700">Metric</label>
+        <select id="rule-metric" class="block w-full border rounded px-3 py-2 text-sm mt-1">
+          ${metricsOptions.map(m=>`<option value="${m}">${m}</option>`).join('')}
+        </select>
+      </div>
+      <div>
+        <label class="text-sm font-medium text-gray-700">Operator</label>
+        <select id="rule-operator" class="block w-full border rounded px-3 py-2 text-sm mt-1">
+          ${operators.map(o=>`<option value="${o.v}">${o.l}</option>`).join('')}
+        </select>
+      </div>
+      <div>
+        <label class="text-sm font-medium text-gray-700">Value</label>
+        <input id="rule-value" type="number" class="block w-full border rounded px-3 py-2 text-sm mt-1" placeholder="e.g. 15">
+      </div>
+      <button onclick="saveAlertRule()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 rounded-lg transition">Save Rule</button>
+    </div>
+  `);
+}
+
+function updateRuleScopeValue() {
+  const scope = document.getElementById('rule-scope').value;
+  const container = document.getElementById('rule-scope-value-container');
+  const allCountries = [...new Set(appData.companies.map(c=>c.country).filter(Boolean))].sort();
+  const allTickers = appData.companies.map(c=>c.ticker).sort();
+
+  if(scope === 'all') { container.innerHTML = ''; return; }
+  if(scope === 'stage') {
+    container.innerHTML = `<select id="rule-scope-value" class="block w-full border rounded px-3 py-2 text-sm mt-1">${STAGES.map(s=>`<option value="${s}">${stageLabel(s)}</option>`).join('')}</select>`;
+  } else if(scope === 'country') {
+    container.innerHTML = `<select id="rule-scope-value" class="block w-full border rounded px-3 py-2 text-sm mt-1">${allCountries.map(c=>`<option value="${c}">${c}</option>`).join('')}</select>`;
+  } else if(scope === 'tag') {
+    container.innerHTML = `<select id="rule-scope-value" class="block w-full border rounded px-3 py-2 text-sm mt-1">${(appData.tags||[]).map(t=>`<option value="${t}">${t}</option>`).join('')}</select>`;
+  } else if(scope === 'ticker') {
+    container.innerHTML = `<select id="rule-scope-value" class="block w-full border rounded px-3 py-2 text-sm mt-1">${allTickers.map(t=>`<option value="${t}">${t}</option>`).join('')}</select>`;
+  }
+}
+
+function saveAlertRule() {
+  const name = document.getElementById('rule-name').value.trim();
+  const scopeType = document.getElementById('rule-scope').value;
+  const scopeValueEl = document.getElementById('rule-scope-value');
+  const scopeValue = scopeValueEl ? scopeValueEl.value : '';
+  const metric = document.getElementById('rule-metric').value;
+  const operator = document.getElementById('rule-operator').value;
+  const value = Number(document.getElementById('rule-value').value);
+
+  if(!name) { toast('Enter a rule name', 'error'); return; }
+
+  appData.alertRules.push({
+    id: uuid(), name, active: true,
+    scopeType, scopeValue, metric, operator, value,
+    createdAt: now(), lastTriggered: null
+  });
+  saveDataToDrive(); closeModal();
+  toast('Alert rule added');
+  renderCurrentView();
+}
+
+// ============================================================
+// WHAT CHANGED DIGEST
+// ============================================================
+function openWhatChangedModal() {
+  const changes = [];
+  for(const c of appData.companies) {
+    if(c.archived || !c.snapshots || c.snapshots.length < 2) continue;
+    const curr = c.snapshots[c.snapshots.length - 1];
+    const prev = c.snapshots[c.snapshots.length - 2];
+    const pricePct = pctChange(prev.price, curr.price);
+    const pePct = pctChange(prev.pe, curr.pe);
+    const mcapPct = pctChange(prev.marketCap, curr.marketCap);
+    changes.push({
+      ticker: c.ticker, name: c.name, stage: c.stage,
+      prevPrice: prev.price, currPrice: curr.price, pricePct,
+      prevPe: prev.pe, currPe: curr.pe, pePct,
+      prevMcap: prev.marketCap, currMcap: curr.marketCap, mcapPct,
+      peCompression: (prev.pe && curr.pe) ? prev.pe - curr.pe : 0,
+      prevDate: prev.timestamp
+    });
+  }
+
+  // Default sort by PE compression (largest drop first)
+  changes.sort((a,b) => b.peCompression - a.peCompression);
+
+  showModal('What Changed', `
+    <div class="space-y-3">
+      <div class="flex gap-2 text-xs mb-2">
+        <button onclick="sortWhatChanged('peCompression')" class="border rounded px-2 py-1 hover:bg-gray-50">P/E Compression</button>
+        <button onclick="sortWhatChanged('pricePct')" class="border rounded px-2 py-1 hover:bg-gray-50">Price % Change</button>
+        <button onclick="sortWhatChanged('mcapPct')" class="border rounded px-2 py-1 hover:bg-gray-50">Mkt Cap Change</button>
+        <button onclick="sortWhatChanged('pePct')" class="border rounded px-2 py-1 hover:bg-gray-50">P/E Change</button>
+      </div>
+      ${changes.length === 0 ? '<p class="text-sm text-gray-400">No comparison data available (need at least 2 snapshots)</p>' : ''}
+      <div class="overflow-x-auto" id="what-changed-body">
+        <table class="min-w-full text-xs">
+          <thead><tr class="border-b text-gray-500">
+            <th class="text-left py-1">Ticker</th><th class="text-left py-1">Name</th><th class="text-left py-1">Stage</th>
+            <th class="text-right py-1">Prev Price</th><th class="text-right py-1">Curr Price</th><th class="text-right py-1">%Δ</th>
+            <th class="text-right py-1">Prev P/E</th><th class="text-right py-1">Curr P/E</th><th class="text-right py-1">%Δ</th>
+          </tr></thead>
+          <tbody>
+            ${changes.map(ch => `<tr class="border-b border-gray-50">
+              <td class="py-1 font-medium">${escHtml(ch.ticker)}</td>
+              <td class="py-1">${escHtml(ch.name||'')}</td>
+              <td class="py-1">${stageBadge(ch.stage)}</td>
+              <td class="text-right py-1">${formatNum(ch.prevPrice,2)}</td>
+              <td class="text-right py-1">${formatNum(ch.currPrice,2)}</td>
+              <td class="text-right py-1 ${ch.pricePct!=null?(ch.pricePct>=0?'text-green-600':'text-red-600'):''}">${formatPct(ch.pricePct)}</td>
+              <td class="text-right py-1">${formatNum(ch.prevPe,1)}</td>
+              <td class="text-right py-1">${formatNum(ch.currPe,1)}</td>
+              <td class="text-right py-1 ${ch.pePct!=null?(ch.pePct>=0?'text-green-600':'text-red-600'):''}">${formatPct(ch.pePct)}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `);
+
+  // Store changes for re-sorting
+  window._whatChangedData = changes;
+}
+
+function sortWhatChanged(key) {
+  const changes = window._whatChangedData || [];
+  if(key === 'peCompression') changes.sort((a,b) => b.peCompression - a.peCompression);
+  else if(key === 'pricePct') changes.sort((a,b) => (a.pricePct||0) - (b.pricePct||0));
+  else if(key === 'mcapPct') changes.sort((a,b) => (a.mcapPct||0) - (b.mcapPct||0));
+  else if(key === 'pePct') changes.sort((a,b) => (a.pePct||0) - (b.pePct||0));
+
+  const tbody = document.querySelector('#what-changed-body tbody');
+  if(!tbody) return;
+  tbody.innerHTML = changes.map(ch => `<tr class="border-b border-gray-50">
+    <td class="py-1 font-medium">${escHtml(ch.ticker)}</td>
+    <td class="py-1">${escHtml(ch.name||'')}</td>
+    <td class="py-1">${stageBadge(ch.stage)}</td>
+    <td class="text-right py-1">${formatNum(ch.prevPrice,2)}</td>
+    <td class="text-right py-1">${formatNum(ch.currPrice,2)}</td>
+    <td class="text-right py-1 ${ch.pricePct!=null?(ch.pricePct>=0?'text-green-600':'text-red-600'):''}">${formatPct(ch.pricePct)}</td>
+    <td class="text-right py-1">${formatNum(ch.prevPe,1)}</td>
+    <td class="text-right py-1">${formatNum(ch.currPe,1)}</td>
+    <td class="text-right py-1 ${ch.pePct!=null?(ch.pePct>=0?'text-green-600':'text-red-600'):''}">${formatPct(ch.pePct)}</td>
+  </tr>`).join('');
+}
+
+// ============================================================
+// INITIALIZATION
+// ============================================================
+window.addEventListener('load', () => {
+  // Pre-fill from localStorage
+  const savedClientId = localStorage.getItem('gd_clientId');
+  const savedFmpKey = localStorage.getItem('fmp_key');
+  if(savedClientId) document.getElementById('input-client-id').value = savedClientId;
+  if(savedFmpKey) document.getElementById('input-fmp-key').value = savedFmpKey;
+
+  // Auto-login if token exists
+  if(accessToken) {
+    onAuthSuccess().catch(() => handleLogout());
+  }
+});
+
+// Close dropdowns when clicking outside
+document.addEventListener('click', (e) => {
+  if(!e.target.closest('.relative')) {
+    document.querySelectorAll('.relative > div.absolute').forEach(el => el.classList.add('hidden'));
+  }
+  // Close search dropdown if clicking outside it
+  if(!e.target.closest('#add-ticker') && !e.target.closest('#ticker-search-dropdown')) {
+    hideSearchDropdown();
+  }
+});
+</script>
+</body>
+</html>
