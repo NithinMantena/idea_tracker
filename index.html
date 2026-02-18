@@ -8,7 +8,6 @@
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <script src="https://apis.google.com/js/api.js"></script>
 <style>
-[x-cloak] { display: none !important; }
 .tab-active { border-bottom: 2px solid #3b82f6; color: #3b82f6; font-weight: 600; }
 .modal-overlay { background: rgba(0,0,0,0.5); }
 .badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 9999px; font-size: 0.75rem; font-weight: 500; }
@@ -90,8 +89,6 @@ const SCOPES = 'https://www.googleapis.com/auth/drive.file https://www.googleapi
 const FMP_BASE = 'https://financialmodelingprep.com/api/v3';
 const STAGES = ['intake','perpetual_watch','interesting_unresolved','passed'];
 const STAGE_LABELS = { intake:'Intake Queue', perpetual_watch:'Perpetual Watch', interesting_unresolved:'Interesting / Unresolved', passed:'Passed / Rejected' };
-const STAGE_COLORS = { intake:'blue', perpetual_watch:'yellow', interesting_unresolved:'indigo', passed:'gray' };
-
 let tokenClient = null;
 let accessToken = localStorage.getItem('gd_token') || null;
 let dataFileId = localStorage.getItem('gd_fileId') || null;
@@ -225,11 +222,12 @@ async function onAuthSuccess() {
 }
 
 function loadGapiClient() {
-  return new Promise((resolve) => {
-    gapi.load('client', async () => {
-      await gapi.client.init({});
-      gapi.client.setToken({ access_token: accessToken });
-      resolve();
+  return new Promise(resolve => {
+    gapi.load('client', () => {
+      gapi.client.init({}).then(() => {
+        gapi.client.setToken({ access_token: accessToken });
+        resolve();
+      });
     });
   });
 }
@@ -311,8 +309,6 @@ function fmpFetch(endpoint, tickers) {
 // GOOGLE SHEETS HELPER — QUOTE ENGINE
 // ============================================================
 const SHEETS_API = 'https://sheets.googleapis.com/v4/spreadsheets';
-const GFINANCE_ATTRS = ['price','pe','marketcap','name','currency','changepct','high52','low52','eps'];
-
 async function findOrCreateHelperSheet() {
   // Search for existing helper sheet
   const searchUrl = `https://www.googleapis.com/drive/v3/files?q=name%3D'_tracker_finance_helper'+and+mimeType%3D'application/vnd.google-apps.spreadsheet'+and+trashed%3Dfalse&fields=files(id)&spaces=drive`;
@@ -363,7 +359,6 @@ async function fetchQuotesBatch(tickers) {
   const header = ['Ticker','Price','P/E','Market Cap','Name','Currency','Change %','52w High','52w Low','EPS'];
   const rows = [header];
   for(let i = 0; i < tickers.length; i++) {
-    const row = i + 2; // data starts at row 2
     const t = tickers[i];
     rows.push([
       t,
@@ -630,10 +625,13 @@ async function refreshData() {
   renderCurrentView();
 }
 
+function lastRefreshText() {
+  const last = appData.sessions.length ? appData.sessions[appData.sessions.length-1] : null;
+  return last ? 'Last refreshed: ' + new Date(last.timestamp).toLocaleString() : 'Not yet refreshed';
+}
+
 function updateSyncStatus() {
-  const el = document.getElementById('sync-status');
-  const lastSession = appData.sessions.length ? appData.sessions[appData.sessions.length-1] : null;
-  el.textContent = lastSession ? 'Last refresh: ' + new Date(lastSession.timestamp).toLocaleString() : '';
+  document.getElementById('sync-status').textContent = lastRefreshText();
 }
 
 // ============================================================
@@ -785,14 +783,9 @@ function renderDashboard() {
       </div>
 
       <!-- Last Refreshed -->
-      <p class="text-xs text-gray-400">${updateSyncStatusText()}</p>
+      <p class="text-xs text-gray-400">${lastRefreshText()}</p>
     </div>
   `;
-}
-
-function updateSyncStatusText() {
-  const last = appData.sessions.length ? appData.sessions[appData.sessions.length-1] : null;
-  return last ? 'Last refreshed: ' + new Date(last.timestamp).toLocaleString() : 'Not yet refreshed';
 }
 
 function markAlertReviewed(alertId) {
@@ -858,12 +851,6 @@ function toggleRowSelect(id) {
   renderCurrentView();
 }
 
-function toggleSelectAll(companies) {
-  if(selectedRows.size === companies.length) selectedRows.clear();
-  else companies.forEach(c => selectedRows.add(c.id));
-  renderCurrentView();
-}
-
 function renderUniverse() {
   const filtered = getFilteredCompanies();
   const sorted = sortCompanies(filtered);
@@ -906,6 +893,7 @@ function renderUniverse() {
           <button onclick="openBulkTagModal()" class="text-sm bg-white border rounded px-3 py-1 hover:bg-gray-50">Set Tags</button>
           <button onclick="openBulkSourceModal()" class="text-sm bg-white border rounded px-3 py-1 hover:bg-gray-50">Set Source</button>
           <button onclick="openBulkStageModal()" class="text-sm bg-white border rounded px-3 py-1 hover:bg-gray-50">Set Stage</button>
+          <button onclick="bulkDeleteCompanies()" class="text-sm bg-white border border-red-200 text-red-600 rounded px-3 py-1 hover:bg-red-50">Delete</button>
           <button onclick="selectedRows.clear();renderCurrentView();" class="text-sm text-gray-500 hover:underline ml-auto">Deselect All</button>
         </div>
       ` : ''}
@@ -915,7 +903,7 @@ function renderUniverse() {
         <table class="min-w-full divide-y divide-gray-200">
           <thead class="bg-gray-50">
             <tr>
-              <th class="px-3 py-2"><input type="checkbox" ${selectedRows.size===sorted.length&&sorted.length?'checked':''} onchange="toggleSelectAll(${JSON.stringify(sorted.map(c=>({id:c.id}))).replace(/"/g,'&quot;').replace(/'/g,'\\\'')});"></th>
+              <th class="px-3 py-2"><input type="checkbox" ${selectedRows.size===sorted.length&&sorted.length?'checked':''} onchange="toggleSelectAll()"></th>
               <th class="${thClass}" onclick="toggleSort('ticker')">Ticker${sortIcon('ticker')}</th>
               <th class="${thClass}" onclick="toggleSort('name')">Name${sortIcon('name')}</th>
               <th class="${thClass}" onclick="toggleSort('country')">Country${sortIcon('country')}</th>
@@ -927,7 +915,7 @@ function renderUniverse() {
               <th class="${thClass}" onclick="toggleSort('peAtAdd')">P/E@Add${sortIcon('peAtAdd')}</th>
               <th class="${thClass}" onclick="toggleSort('pricePct')">Price %Chg${sortIcon('pricePct')}</th>
               <th class="${thClass}" onclick="toggleSort('marketCap')">Mkt Cap${sortIcon('marketCap')}</th>
-              <th class="${thClass}" onclick="toggleSort('dateAdded')">Added${sortIcon('dateAdded')}</th>
+              <th class="${thClass}" onclick="toggleSort('dateAdded')">Date Sourced${sortIcon('dateAdded')}</th>
               <th class="${thClass}"></th>
             </tr>
           </thead>
@@ -965,6 +953,7 @@ function renderUniverseRow(c) {
     <td class="px-3 py-2 text-sm flex gap-1">
       ${c.googleDocLink?`<a href="${escHtml(c.googleDocLink)}" target="_blank" onclick="event.stopPropagation()" class="text-blue-500 hover:text-blue-700" title="Doc">📄</a>`:''}
       ${hasAlert?'<span class="text-red-500" title="Alert">🔔</span>':''}
+      <button onclick="event.stopPropagation();deleteCompany('${c.id}')" class="text-gray-300 hover:text-red-500 transition" title="Delete">🗑</button>
     </td>
   </tr>`;
 }
@@ -995,7 +984,6 @@ function toggleFilter(key, value) {
   renderCurrentView();
 }
 
-// Fix selectAll for universe
 function toggleSelectAll() {
   const filtered = sortCompanies(getFilteredCompanies());
   if(selectedRows.size === filtered.length && filtered.length > 0) selectedRows.clear();
@@ -1059,6 +1047,10 @@ function renderDetail() {
                 <input type="number" value="${c.targetPriceMin||''}" onchange="changeCompanyField('${c.id}','targetPriceMin',Number(this.value)||null)" placeholder="Min" class="w-1/2 border rounded px-2 py-1 text-sm">
                 <input type="number" value="${c.targetPriceMax||''}" onchange="changeCompanyField('${c.id}','targetPriceMax',Number(this.value)||null)" placeholder="Max" class="w-1/2 border rounded px-2 py-1 text-sm">
               </div>
+            </div>
+            <div>
+              <label class="text-xs font-semibold text-gray-500">Date Sourced</label>
+              <input type="date" value="${c.dateAdded ? c.dateAdded.slice(0,10) : ''}" onchange="changeCompanyField('${c.id}','dateAdded',this.value?new Date(this.value).toISOString():'')" class="block w-full border rounded px-2 py-1 text-sm mt-1">
             </div>
             <div>
               <label class="text-xs font-semibold text-gray-500">Google Doc Link</label>
@@ -1386,21 +1378,17 @@ function exportData() {
   a.click();
 }
 
-function importData(event) {
+async function importData(event) {
   const file = event.target.files[0];
   if(!file) return;
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    try {
-      const data = JSON.parse(e.target.result);
-      appData = { ...DEFAULT_DATA, ...data, settings: { ...DEFAULT_DATA.settings, ...(data.settings||{}) } };
-      if(!appData.sources) appData.sources = [];
-      saveDataToDrive();
-      toast('Data imported');
-      renderCurrentView();
-    } catch(err) { toast('Invalid JSON file', 'error'); }
-  };
-  reader.readAsText(file);
+  try {
+    const data = JSON.parse(await file.text());
+    appData = { ...DEFAULT_DATA, ...data, settings: { ...DEFAULT_DATA.settings, ...(data.settings||{}) } };
+    if(!appData.sources) appData.sources = [];
+    saveDataToDrive();
+    toast('Data imported');
+    renderCurrentView();
+  } catch(err) { toast('Invalid JSON file', 'error'); }
 }
 
 // ============================================================
@@ -1433,6 +1421,34 @@ function changeCompanyField(companyId, field, value) {
   c[field] = value;
   c.dateLastUpdated = now();
   saveDataToDrive();
+}
+
+function deleteCompany(companyId) {
+  const c = getCompany(companyId);
+  if(!c) return;
+  if(!confirm(`Are you sure you want to permanently delete ${c.ticker} — ${c.name}? This cannot be undone.`)) return;
+  appData.companies = appData.companies.filter(x => x.id !== companyId);
+  appData.alertRules = appData.alertRules.filter(r => !(r.scopeType === 'ticker' && r.scopeValue === c.ticker));
+  appData.alertHistory = appData.alertHistory.filter(a => a.companyId !== companyId);
+  selectedRows.delete(companyId);
+  saveDataToDrive();
+  toast(`Deleted ${c.ticker}`);
+  renderCurrentView();
+}
+
+function bulkDeleteCompanies() {
+  const ids = new Set(selectedRows);
+  if(!ids.size) return;
+  const tickers = [...ids].map(id => getCompany(id)?.ticker).filter(Boolean);
+  if(!confirm(`Are you sure you want to permanently delete ${ids.size} companies?\n\n${tickers.join(', ')}\n\nThis cannot be undone.`)) return;
+  const tickerSet = new Set(tickers);
+  appData.companies = appData.companies.filter(c => !ids.has(c.id));
+  appData.alertRules = appData.alertRules.filter(r => !(r.scopeType === 'ticker' && tickerSet.has(r.scopeValue)));
+  appData.alertHistory = appData.alertHistory.filter(a => !ids.has(a.companyId));
+  selectedRows.clear();
+  saveDataToDrive();
+  toast(`Deleted ${ids.size} companies`);
+  renderCurrentView();
 }
 
 function addTag(companyId, tag) {
@@ -1530,6 +1546,10 @@ function openAddCompanyModal() {
         </div>
       </div>
       <div>
+        <label class="text-sm font-medium text-gray-700">Date Sourced</label>
+        <input id="add-date-sourced" type="date" value="${new Date().toISOString().slice(0,10)}" class="block w-full border rounded px-3 py-2 text-sm mt-1">
+      </div>
+      <div>
         <label class="text-sm font-medium text-gray-700">Why Interesting</label>
         <textarea id="add-why" class="block w-full border rounded px-3 py-2 text-sm mt-1" rows="2"></textarea>
       </div>
@@ -1569,11 +1589,13 @@ function confirmAddCompany() {
   const source = document.getElementById('add-source').value;
   const why = document.getElementById('add-why').value.trim();
   const tags = [...document.querySelectorAll('.add-tag-cb:checked')].map(cb=>cb.value);
+  const dateSourced = document.getElementById('add-date-sourced').value ? new Date(document.getElementById('add-date-sourced').value).toISOString() : now();
 
+  let whyPassed = '';
   if(stage === 'passed') {
     const reason = prompt('Why passed?');
     if(reason === null) return;
-    var whyPassed = reason;
+    whyPassed = reason;
   }
 
   const p = lookupCache?.profile || {};
@@ -1583,10 +1605,10 @@ function confirmAddCompany() {
     id: uuid(), ticker, name: p.companyName || q.name || ticker,
     country: p.country || '', industry: p.industry || '', sector: p.sector || '', currency: p.currency || q.currency || '',
     marketCap: q.marketCap || null,
-    stage, source, tags, whyInteresting: why, notes: '', whyPassed: whyPassed || '',
+    stage, source, tags, whyInteresting: why, notes: '', whyPassed,
     googleDocLink: '', targetPriceMin: null, targetPriceMax: null,
-    dateAdded: now(), dateLastUpdated: now(),
-    stageHistory: [{ stage, timestamp: now(), note: 'Initial add' }],
+    dateAdded: dateSourced, dateLastUpdated: now(),
+    stageHistory: [{ stage, timestamp: dateSourced, note: 'Initial add' }],
     customMetrics: [],
     snapshots: q.price ? [{ timestamp: now(), price: q.price, pe: q.pe, marketCap: q.marketCap }] : [],
     archived: false
@@ -1714,6 +1736,7 @@ function openBulkTagModal() {
 
 function applyBulkTags() {
   const tags = [...document.querySelectorAll('.bulk-action-tag-cb:checked')].map(cb=>cb.value);
+  const count = selectedRows.size;
   for(const id of selectedRows) {
     const c = getCompany(id);
     if(!c) continue;
@@ -1721,8 +1744,9 @@ function applyBulkTags() {
     for(const t of tags) { if(!c.tags.includes(t)) c.tags.push(t); }
     c.dateLastUpdated = now();
   }
-  saveDataToDrive(); closeModal(); selectedRows.clear();
-  toast(`Tags applied to ${selectedRows.size||tags.length} companies`);
+  selectedRows.clear();
+  saveDataToDrive(); closeModal();
+  toast(`Tags applied to ${count} companies`);
   renderCurrentView();
 }
 
@@ -1899,6 +1923,20 @@ function saveAlertRule() {
 // ============================================================
 // WHAT CHANGED DIGEST
 // ============================================================
+function renderChangeRow(ch) {
+  return `<tr class="border-b border-gray-50">
+    <td class="py-1 font-medium">${escHtml(ch.ticker)}</td>
+    <td class="py-1">${escHtml(ch.name||'')}</td>
+    <td class="py-1">${stageBadge(ch.stage)}</td>
+    <td class="text-right py-1">${formatNum(ch.prevPrice,2)}</td>
+    <td class="text-right py-1">${formatNum(ch.currPrice,2)}</td>
+    <td class="text-right py-1 ${ch.pricePct!=null?(ch.pricePct>=0?'text-green-600':'text-red-600'):''}">${formatPct(ch.pricePct)}</td>
+    <td class="text-right py-1">${formatNum(ch.prevPe,1)}</td>
+    <td class="text-right py-1">${formatNum(ch.currPe,1)}</td>
+    <td class="text-right py-1 ${ch.pePct!=null?(ch.pePct>=0?'text-green-600':'text-red-600'):''}">${formatPct(ch.pePct)}</td>
+  </tr>`;
+}
+
 function openWhatChangedModal() {
   const changes = [];
   for(const c of appData.companies) {
@@ -1938,17 +1976,7 @@ function openWhatChangedModal() {
             <th class="text-right py-1">Prev P/E</th><th class="text-right py-1">Curr P/E</th><th class="text-right py-1">%Δ</th>
           </tr></thead>
           <tbody>
-            ${changes.map(ch => `<tr class="border-b border-gray-50">
-              <td class="py-1 font-medium">${escHtml(ch.ticker)}</td>
-              <td class="py-1">${escHtml(ch.name||'')}</td>
-              <td class="py-1">${stageBadge(ch.stage)}</td>
-              <td class="text-right py-1">${formatNum(ch.prevPrice,2)}</td>
-              <td class="text-right py-1">${formatNum(ch.currPrice,2)}</td>
-              <td class="text-right py-1 ${ch.pricePct!=null?(ch.pricePct>=0?'text-green-600':'text-red-600'):''}">${formatPct(ch.pricePct)}</td>
-              <td class="text-right py-1">${formatNum(ch.prevPe,1)}</td>
-              <td class="text-right py-1">${formatNum(ch.currPe,1)}</td>
-              <td class="text-right py-1 ${ch.pePct!=null?(ch.pePct>=0?'text-green-600':'text-red-600'):''}">${formatPct(ch.pePct)}</td>
-            </tr>`).join('')}
+            ${changes.map(renderChangeRow).join('')}
           </tbody>
         </table>
       </div>
@@ -1968,17 +1996,7 @@ function sortWhatChanged(key) {
 
   const tbody = document.querySelector('#what-changed-body tbody');
   if(!tbody) return;
-  tbody.innerHTML = changes.map(ch => `<tr class="border-b border-gray-50">
-    <td class="py-1 font-medium">${escHtml(ch.ticker)}</td>
-    <td class="py-1">${escHtml(ch.name||'')}</td>
-    <td class="py-1">${stageBadge(ch.stage)}</td>
-    <td class="text-right py-1">${formatNum(ch.prevPrice,2)}</td>
-    <td class="text-right py-1">${formatNum(ch.currPrice,2)}</td>
-    <td class="text-right py-1 ${ch.pricePct!=null?(ch.pricePct>=0?'text-green-600':'text-red-600'):''}">${formatPct(ch.pricePct)}</td>
-    <td class="text-right py-1">${formatNum(ch.prevPe,1)}</td>
-    <td class="text-right py-1">${formatNum(ch.currPe,1)}</td>
-    <td class="text-right py-1 ${ch.pePct!=null?(ch.pePct>=0?'text-green-600':'text-red-600'):''}">${formatPct(ch.pePct)}</td>
-  </tr>`).join('');
+  tbody.innerHTML = changes.map(renderChangeRow).join('');
 }
 
 // ============================================================
