@@ -897,6 +897,7 @@ function renderUniverse() {
           <button onclick="openBulkTagModal()" class="text-sm bg-white border rounded px-3 py-1 hover:bg-gray-50">Set Tags</button>
           <button onclick="openBulkSourceModal()" class="text-sm bg-white border rounded px-3 py-1 hover:bg-gray-50">Set Source</button>
           <button onclick="openBulkStageModal()" class="text-sm bg-white border rounded px-3 py-1 hover:bg-gray-50">Set Stage</button>
+          ${appData.settings.industryMode === 'custom' ? `<button onclick="openBulkIndustryModal()" class="text-sm bg-white border rounded px-3 py-1 hover:bg-gray-50">Set Industry</button>` : ''}
           <button onclick="bulkDeleteCompanies()" class="text-sm bg-white border border-red-200 text-red-600 rounded px-3 py-1 hover:bg-red-50">Delete</button>
           <button onclick="selectedRows.clear();renderCurrentView();" class="text-sm text-gray-500 hover:underline ml-auto">Deselect All</button>
         </div>
@@ -2030,6 +2031,31 @@ function applyBulkStage() {
   }
   saveDataToDrive(); closeModal(); selectedRows.clear();
   toast(`Stage set to ${stageLabel(stage)} for ${count} companies`);
+  renderCurrentView();
+}
+
+function openBulkIndustryModal() {
+  showModal('Set Industry (Bulk)', `
+    <div class="space-y-3">
+      <p class="text-sm text-gray-600">Select industry for ${selectedRows.size} companies:</p>
+      <select id="bulk-action-industry" class="block w-full border rounded px-3 py-2 text-sm">
+        <option value="">— None —</option>
+        ${(appData.industries||[]).map(ind=>`<option value="${escHtml(ind)}">${escHtml(ind)}</option>`).join('')}
+      </select>
+      <button onclick="applyBulkIndustry()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 rounded-lg transition">Apply Industry</button>
+    </div>
+  `);
+}
+
+function applyBulkIndustry() {
+  const industry = document.getElementById('bulk-action-industry').value;
+  const count = selectedRows.size;
+  for(const id of selectedRows) {
+    const c = getCompany(id);
+    if(c) { c.industry = industry; c.dateLastUpdated = now(); }
+  }
+  saveDataToDrive(); closeModal(); selectedRows.clear();
+  toast(`Industry set for ${count} companies`);
   renderCurrentView();
 }
 
