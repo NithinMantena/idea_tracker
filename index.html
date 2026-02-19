@@ -14,6 +14,7 @@
 .stage-intake { background: #dbeafe; color: #1e40af; }
 .stage-perpetual_watch { background: #fef9c3; color: #854d0e; }
 .stage-interesting_unresolved { background: #e0e7ff; color: #3730a3; }
+.stage-purchased_sold { background: #d1fae5; color: #065f46; }
 .stage-passed { background: #f3f4f6; color: #6b7280; }
 .toast { position: fixed; bottom: 20px; right: 20px; z-index: 9999; padding: 12px 24px; border-radius: 8px; color: white; font-weight: 500; transition: opacity 0.3s; }
 .toast-success { background: #10b981; }
@@ -87,8 +88,8 @@ th.sorted-desc::after { content: ' ▼'; }
 // ============================================================
 const SCOPES = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/spreadsheets';
 const FMP_BASE = 'https://financialmodelingprep.com/api/v3';
-const STAGES = ['intake','perpetual_watch','interesting_unresolved','passed'];
-const STAGE_LABELS = { intake:'Intake Queue', perpetual_watch:'Perpetual Watch', interesting_unresolved:'Interesting / Unresolved', passed:'Passed / Rejected' };
+const STAGES = ['intake','perpetual_watch','interesting_unresolved','purchased_sold','passed'];
+const STAGE_LABELS = { intake:'Intake Queue', perpetual_watch:'Perpetual Watch', interesting_unresolved:'Interesting / Unresolved', purchased_sold:'Purchased / Sold', passed:'Passed / Rejected' };
 let tokenClient = null;
 let accessToken = localStorage.getItem('gd_token') || null;
 let dataFileId = localStorage.getItem('gd_fileId') || null;
