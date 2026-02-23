@@ -421,7 +421,7 @@ async function fetchProfileViaSheets(ticker) {
   await new Promise(r => setTimeout(r, 2000));
   const data = await sheetsRead('Sheet1!L2:O2');
   if(!data.length || !data[0][1]) return null;
-  return { companyName: data[0][0]||ticker, name: data[0][0]||ticker, currency: data[0][1]||'', exchange: data[0][2]||'', country:'', industry:'', sector:'' };
+  return { companyName: data[0][1]||ticker, name: data[0][1]||ticker, currency: data[0][2]||'', exchange: data[0][3]||'', country:'', industry:'', sector:'' };
 }
 
 async function fetchProfile(ticker) {
@@ -576,6 +576,13 @@ function onTickerSearchKeydown(e) {
     if(sym) selectSearchResult(sym);
   }
   else if(e.key === 'Escape') { hideSearchDropdown(); }
+}
+
+function onTickerBlur() {
+  const ticker = document.getElementById('add-ticker').value.trim();
+  if(ticker && !lookupCache) {
+    lookupTicker();
+  }
 }
 
 function selectSearchResult(symbol) {
@@ -1624,15 +1631,20 @@ function openAddCompanyModal() {
   showModal('Add Company', `
     <div class="space-y-3">
       <div>
-        <label class="text-sm font-medium text-gray-700">Search Ticker or Company Name</label>
+        <label class="text-sm font-medium text-gray-700">Ticker (optional)</label>
         <div class="relative mt-1">
           <input id="add-ticker" type="text" class="w-full border rounded px-3 py-2 text-sm" placeholder="e.g. AAPL, TYO:9983, LON:SHEL, NSE:RELIANCE..." autocomplete="off"
-            oninput="onTickerSearchInput(this)" onkeydown="onTickerSearchKeydown(event)" onfocus="onTickerSearchInput(this)">
+            oninput="onTickerSearchInput(this)" onkeydown="onTickerSearchKeydown(event)" onfocus="onTickerSearchInput(this)" onblur="onTickerBlur()">
           <div id="ticker-search-dropdown" class="search-dropdown hidden"></div>
         </div>
-        <p class="text-xs text-gray-400 mt-1">${stockListMode==='full'?'Instant search from cached list.':'Live search via FMP API.'} <button onclick="fetchStockList().then(()=>toast(stockListMode==='full'?'Full list loaded':'Using live search'))" class="text-blue-500 hover:underline">Refresh list</button> · No ticker? Just type a company name and click Add directly.</p>
+        <p class="text-xs text-gray-400 mt-1">${stockListMode==='full'?'Instant search from cached list.':'Live search via FMP API.'} <button onclick="fetchStockList().then(()=>toast(stockListMode==='full'?'Full list loaded':'Using live search'))" class="text-blue-500 hover:underline">Refresh list</button> · Leave empty if no ticker is available.</p>
       </div>
       <div id="add-lookup-result"></div>
+      <div>
+        <label class="text-sm font-medium text-gray-700">Company Name</label>
+        <input id="add-company-name" type="text" class="w-full border rounded px-3 py-2 text-sm mt-1" placeholder="Auto-filled from ticker lookup, or enter manually" autocomplete="off">
+        <p class="text-xs text-gray-400 mt-1">Required.</p>
+      </div>
       <div>
         <label class="text-sm font-medium text-gray-700">Stage</label>
         <select id="add-stage" class="block w-full border rounded px-3 py-2 text-sm mt-1">
@@ -1646,6 +1658,14 @@ function openAddCompanyModal() {
           ${(appData.sources||[]).map(s=>`<option value="${escHtml(s)}">${escHtml(s)}</option>`).join('')}
         </select>
       </div>
+      ${appData.settings.industryMode === 'custom' ? `
+      <div>
+        <label class="text-sm font-medium text-gray-700">Industry</label>
+        <select id="add-industry" class="block w-full border rounded px-3 py-2 text-sm mt-1">
+          <option value="">— None —</option>
+          ${(appData.industries||[]).map(ind=>`<option value="${escHtml(ind)}">${escHtml(ind)}</option>`).join('')}
+        </select>
+      </div>` : ''}
       <div>
         <label class="text-sm font-medium text-gray-700">Tags</label>
         <div class="flex flex-wrap gap-1 mt-1" id="add-tags-container">
@@ -1681,6 +1701,10 @@ async function lookupTicker() {
   if(!profile && !quote) { el.innerHTML = '<p class="text-sm text-red-500">Ticker not found. Try the Google Finance format (e.g. TYO:9983, LON:SHEL, NSE:RELIANCE).</p>'; lookupCache=null; return; }
   lookupCache = { profile, quote, ticker };
   const name = profile?.companyName || quote?.name || ticker;
+  const nameEl = document.getElementById('add-company-name');
+  if(nameEl && !nameEl.value.trim()) {
+    nameEl.value = name;
+  }
   const currency = profile?.currency || quote?.currency || '';
   el.innerHTML = `<div class="text-sm bg-green-50 p-3 rounded">
     <p class="font-medium">${escHtml(name)}</p>
@@ -1690,14 +1714,20 @@ async function lookupTicker() {
 }
 
 function confirmAddCompany() {
-  const rawInput = document.getElementById('add-ticker').value.trim();
-  if(!rawInput) { toast('Enter a ticker or company name', 'error'); return; }
+  const rawTicker = document.getElementById('add-ticker').value.trim().toUpperCase();
+  const rawName   = document.getElementById('add-company-name').value.trim();
 
-  // Use the verified ticker from lookup; if no lookup was done, no ticker
-  const ticker = lookupCache ? lookupCache.ticker.toUpperCase() : '';
+  if(!rawTicker && !rawName) { toast('Enter a ticker or company name', 'error'); return; }
+
+  // Ticker: use verified lookup ticker if available, otherwise use raw input (allows manual entry)
+  const ticker = lookupCache ? lookupCache.ticker.toUpperCase() : rawTicker;
   const p = lookupCache?.profile || {};
-  const q = lookupCache?.quote || {};
-  const name = p.companyName || q.name || (ticker ? ticker : rawInput);
+  const q = lookupCache?.quote  || {};
+
+  // Name: use manually entered name first, fall back to lookup result, fall back to ticker
+  const name = rawName || p.companyName || q.name || ticker;
+
+  if(!name) { toast('Enter a company name', 'error'); return; }
 
   // Duplicate check
   if(ticker && appData.companies.some(c=>c.ticker===ticker)) { toast('Already in universe', 'error'); return; }
@@ -1708,6 +1738,8 @@ function confirmAddCompany() {
   const why = document.getElementById('add-why').value.trim();
   const tags = [...document.querySelectorAll('.add-tag-cb:checked')].map(cb=>cb.value);
   const dateSourced = document.getElementById('add-date-sourced').value ? new Date(document.getElementById('add-date-sourced').value).toISOString() : now();
+  const industryEl = document.getElementById('add-industry');
+  const industry = industryEl ? industryEl.value : (p.industry || '');
 
   let whyPassed = '';
   if(stage === 'passed') {
@@ -1718,7 +1750,7 @@ function confirmAddCompany() {
 
   const company = {
     id: uuid(), ticker, name,
-    country: p.country || '', industry: p.industry || '', sector: p.sector || '', currency: p.currency || q.currency || '',
+    country: p.country || '', industry, sector: p.sector || '', currency: p.currency || q.currency || '',
     marketCap: q.marketCap || null,
     stage, source, tags, whyInteresting: why, notes: '', whyPassed,
     googleDocLink: '', targetPriceMin: null, targetPriceMax: null,
